@@ -45,8 +45,6 @@ h1 span{display:inline-block;margin-left:.15em;font-size:.7em;color:#5ff2ff;text
 .bar{height:14px;border-radius:8px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.35);overflow:hidden}
 .bar>div{height:100%;width:0;background:linear-gradient(90deg,#ffb03b,#ff3b6b);transition:width .15s}
 .bar.small{height:8px;width:160px}
-#stamina{background:linear-gradient(90deg,#3bd1ff,#7affb0)!important}
-#stamina-wrap{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);text-align:center;opacity:.85}
 #announce{position:absolute;left:0;right:0;top:22%;text-align:center;font-size:clamp(26px,4.5vw,52px);font-weight:900;color:#fff;text-shadow:0 0 10px #ff3b6b,0 0 30px #ff3b6b,3px 3px 0 #400;opacity:0;transition:opacity .3s,transform .3s;transform:scale(.8)}
 #announce.show{opacity:1;transform:scale(1)}
 #announce small{display:block;font-size:.45em;color:#ffd9ec;margin-top:6px}
@@ -73,8 +71,6 @@ h1 span{display:inline-block;margin-left:.15em;font-size:.7em;color:#5ff2ff;text
 .stick.active .knob{transition:none}
 .stick span{position:absolute;left:0;right:0;top:-22px;text-align:center;font-size:12px;font-weight:700;color:rgba(255,255,255,.7);text-shadow:0 1px 3px #000}
 #stickR .knob{box-shadow:0 0 12px rgba(255,90,150,.55)}
-#sprint-btn{pointer-events:auto;position:absolute;right:56px;bottom:196px;width:86px;height:86px;border-radius:50%;border:2px solid rgba(95,242,255,.8);background:rgba(10,40,70,.55);color:#bff;font-weight:900;font-size:16px}
-#sprint-btn.on{background:rgba(60,180,255,.6)}
 .touch-only{display:none} body.touch .touch-only,body.sticks #pause-btn{display:inline-block} body.touch .pc-only{display:none}
 .sp{display:none}
 @media (max-width:760px){.title-wrap{margin-right:0;margin-top:46vh}.sp{display:inline} h1{font-size:44px}}

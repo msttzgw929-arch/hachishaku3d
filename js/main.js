@@ -80,7 +80,7 @@ hands.visible = false;
 // ---------------- state
 const S = {
   mode: 'title', time: 0, hearts: 3, irritation: 0, stage: 0, maxStage: 0, buildings: 0, escapes: 0, catches: 0,
-  pos: new THREE.Vector3(), yaw: 0, pitch: 0, vel: new THREE.Vector3(), knock: new THREE.Vector3(), stamina: 100, exhausted: false, invuln: 0,
+  pos: new THREE.Vector3(), yaw: 0, pitch: 0, vel: new THREE.Vector3(), knock: new THREE.Vector3(), invuln: 0,
   bob: 0, stepAcc: 0, shake: 0,
   h: { pos: hachi.root.position, yaw: 0, path: null, pathT: 0, wp: 0, stun: 0, lunge: 0, lungeCd: 3, lostT: 0, sawPlayer: false, wasNear: false, tauntT: 6, smashCd: 0, exprT: 0, expr: null, stuckT: 0, lastPos: new THREE.Vector3(), speed: 0 },
   grab: null, overT: 0, angryT: 0,
@@ -89,7 +89,9 @@ window.__game = { S, hachi, world, audio, camera, renderer, scene, get info() { 
 
 // ---------------- input
 const keys = {};
-let mouseDX = 0, mouseDY = 0, sprintTouch = false;
+// speeds (m/s). Player is always clearly faster in the open; she wins only by cornering / lunging up close.
+const PLAYER_SPEED = 6.0;
+let mouseDX = 0, mouseDY = 0;
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') { e.preventDefault(); if (S.mode === 'grab') slap(); }
@@ -143,7 +145,6 @@ document.body.addEventListener('pointerdown', (e) => {
 document.body.addEventListener('pointermove', (e) => { for (const k of ['L', 'R']) if (sticks[k].id === e.pointerId) stickMove(sticks[k], e); });
 const pEnd = (e) => { for (const k of ['L', 'R']) if (sticks[k].id === e.pointerId) stickUp(sticks[k]); };
 document.body.addEventListener('pointerup', pEnd); document.body.addEventListener('pointercancel', pEnd);
-$('sprint-btn').addEventListener('touchstart', (e) => { sprintTouch = !sprintTouch; $('sprint-btn').classList.toggle('on', sprintTouch); e.preventDefault(); e.stopPropagation(); }, { passive: false });
 $('pause-btn').addEventListener('click', () => { if (S.mode === 'play') pause(); });
 
 // ---------------- UI
@@ -171,7 +172,7 @@ function placeHachiTitle() {
 }
 function resetGame() {
   S.time = 0; S.hearts = 3; S.irritation = 0; S.stage = 0; S.maxStage = 0; S.buildings = 0; S.escapes = 0; S.catches = 0;
-  S.stamina = 100; S.exhausted = false; S.invuln = 2; S.vel.set(0, 0, 0); S.knock.set(0, 0, 0);
+  S.invuln = 2; S.vel.set(0, 0, 0); S.knock.set(0, 0, 0);
   S.pos.set(ROADS[4] + 0, 0, ROADS[5] - 2); S.yaw = Math.PI; S.pitch = 0.05;
   hachi.setStage(0, true);
   const h = S.h; h.pos.set(ROADS[4], 0, ROADS[4] - 4); h.yaw = 0; hachi.root.rotation.y = 0; h.path = null; h.stun = 0; h.lunge = 0; h.lungeCd = 4; h.lostT = 0; h.wasNear = false; h.tauntT = 7; h.smashCd = 0; h.stuckT = 0;
@@ -275,11 +276,7 @@ function updatePlayer(dt) {
   if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
   mx += sticks.L.x; mz += sticks.L.y;
   const ml = Math.hypot(mx, mz); if (ml > 1) { mx /= ml; mz /= ml; }
-  const wantSprint = (keys.ShiftLeft || keys.ShiftRight || sprintTouch) && ml > 0.1;
-  const sprint = wantSprint && !S.exhausted;
-  if (sprint) { S.stamina -= dt * 20; if (S.stamina <= 0) { S.stamina = 0; S.exhausted = true; } }
-  else { S.stamina = Math.min(100, S.stamina + dt * (ml > 0.1 ? 11 : 18)); if (S.exhausted && S.stamina > 35) S.exhausted = false; }
-  const speed = sprint ? 6.1 : 3.5;
+  const speed = PLAYER_SPEED; // fast by default (no sprint / stamina)
   const sin = Math.sin(S.yaw), cos = Math.cos(S.yaw);
   const tx = (mx * cos + mz * sin) * speed, tz = (-mx * sin + mz * cos) * speed;
   const k = 1 - Math.exp(-dt * 12);
@@ -288,14 +285,14 @@ function updatePlayer(dt) {
   S.knock.multiplyScalar(Math.exp(-dt * 4));
   world.collide(S.pos, 0.32); world.collideProps(S.pos, 0.32);
   const sp = Math.hypot(S.vel.x, S.vel.z);
-  S.bob += sp * dt * 2.2;
-  S.stepAcc += sp * dt; if (S.stepAcc > (sprint ? 1.25 : 0.95)) { S.stepAcc = 0; audio.playerStep(sprint); }
+  S.bob += sp * dt * 1.55; // ~2.3 steps/s at full speed
+  S.stepAcc += sp * dt; if (S.stepAcc > 1.3) { S.stepAcc = 0; audio.playerStep(sp > 4); }
   S.invuln = Math.max(0, S.invuln - dt);
 }
 
 function hachiTargetSpeed() {
-  const base = 3.75 + S.irritation * 0.005;
-  return base * Math.max(0.62, 1 - 0.055 * S.stage);
+  const base = 2.9 + S.irritation * 0.004; // 2.9 .. 3.3 by irritation
+  return base * Math.max(0.6, 1 - 0.07 * S.stage); // stage0 2.9-3.3, stage2 2.5-2.8, stage4 2.1-2.4, stage6+ 1.7-2.0
 }
 
 function updateHachi(dt) {
@@ -328,7 +325,7 @@ function updateHachi(dt) {
     }
     speed = hachiTargetSpeed();
     h.lungeCd -= dt;
-    if (h.lunge > 0) { h.lunge -= dt; speed *= 1.55; }
+    if (h.lunge > 0) { h.lunge -= dt; speed *= 1.7; } // short burst, still below PLAYER_SPEED
     else if (dist < 6 && h.lungeCd <= 0 && los) { h.lunge = 0.75; h.lungeCd = 5 + Math.random() * 3; }
     if (S.invuln > 0 && bdist < 3) speed *= 0.3;
   }
@@ -452,7 +449,7 @@ function updateCamera(dt, dist) {
   const bobY = Math.sin(S.bob * Math.PI) * 0.035, bobX = Math.cos(S.bob * Math.PI * 0.5) * 0.02;
   camera.position.set(S.pos.x + (Math.random() - 0.5) * sh * 0.25, eye + bobY + (Math.random() - 0.5) * sh * 0.25, S.pos.z + (Math.random() - 0.5) * sh * 0.25);
   camera.rotation.set(S.pitch + (Math.random() - 0.5) * sh * 0.03, S.yaw, bobX * 0.3, 'YXZ');
-  const targetFov = S.mode === 'grab' ? 82 : (Math.hypot(S.vel.x, S.vel.z) > 5 ? 80 : 74);
+  const targetFov = S.mode === 'grab' ? 82 : (74 + Math.min(1, Math.hypot(S.vel.x, S.vel.z) / PLAYER_SPEED) * 5);
   camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-dt * 5)); camera.updateProjectionMatrix();
 }
 
@@ -518,7 +515,6 @@ function updateHUD(dist) {
   $('hearts').textContent = '♥'.repeat(Math.max(0, S.hearts)) + '♡'.repeat(Math.max(0, 3 - S.hearts));
   $('lv').textContent = 'Lv.' + S.stage;
   $('irr').style.width = Math.min(100, S.irritation) + '%';
-  $('stamina').style.width = S.stamina + '%'; $('stamina').style.opacity = S.exhausted ? 0.4 : 1;
   $('dist').textContent = dist < 60 ? `八尺様まで ${Math.max(0, dist - hachi.radius).toFixed(0)}m` : '';
 }
 
