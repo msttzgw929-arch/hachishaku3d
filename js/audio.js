@@ -30,7 +30,8 @@ export class Audio {
     const C = window.AudioContext || window.webkitAudioContext; const ctx = this.ctx = new C();
     this.master = ctx.createGain(); this.master.gain.value = 0.9;
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4;
-    this.master.connect(comp); comp.connect(ctx.destination);
+    this.muffle = ctx.createBiquadFilter(); this.muffle.type = 'lowpass'; this.muffle.frequency.value = 20000; this.muffle.Q.value = 0.5;
+    this.master.connect(this.muffle); this.muffle.connect(comp); comp.connect(ctx.destination);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
     this.music = ctx.createGain(); this.music.gain.value = 0.32; this.music.connect(this.master);
     this.voiceBus = ctx.createGain(); this.voiceBus.gain.value = 1.25; this.voiceBus.connect(this.master);
@@ -184,4 +185,6 @@ export class Audio {
       this.bgmT += beat; this.bgmStep++;
     }
   }
+  // muffled hearing while pressed into the belly (0..1)
+  setMuffle(a) { if (!this.muffle) return; const f = 20000 * Math.pow(900 / 20000, a); this.muffle.frequency.setTargetAtTime(f, this.ctx.currentTime, 0.08); }
 }

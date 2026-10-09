@@ -31,6 +31,8 @@ async def main():
         await ev("()=>{const S=window.__game.S;S.invuln=0;S.h.stun=0;window.__game.setExpr('smug',0);S.h.pos.set(S.pos.x,0,S.pos.z-2.5);window.__game.startGrab();}")
         await sim(5, 2500)
         await pg.screenshot(path=f'{OUT}/03_restraint.png'); print('grab ok', flush=True)
+        await sim(3, 1200); await pg.screenshot(path=f'{OUT}/12_sink_in.png')
+        print('dent', await ev("()=>{const S=window.__game.S;return {d:+S.dent.d.toFixed(3)}}"), flush=True)
         for i in range(4):
             await pg.mouse.click(640, 420); await pg.wait_for_timeout(200)
         await pg.keyboard.press('Space'); await sim(2, 300)

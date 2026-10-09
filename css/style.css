@@ -66,12 +66,25 @@ h1 span{display:inline-block;margin-left:.15em;font-size:.7em;color:#5ff2ff;text
 @keyframes shake{0%,100%{transform:translate(0,0)}25%{transform:translate(-3px,2px)}50%{transform:translate(3px,-1px)}75%{transform:translate(-1px,-2px)}}
 /* touch */
 #touch{position:fixed;inset:0;z-index:9;pointer-events:none}
-#stick-base{position:absolute;width:130px;height:130px;border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08);display:none}
-#stick-knob{position:absolute;left:40px;top:40px;width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,.45)}
-#sprint-btn{pointer-events:auto;position:absolute;right:26px;bottom:110px;width:86px;height:86px;border-radius:50%;border:2px solid rgba(95,242,255,.8);background:rgba(10,40,70,.55);color:#bff;font-weight:900;font-size:16px}
+.stick{position:absolute;width:130px;height:130px;border-radius:50%;border:2px solid rgba(255,255,255,.3);background:radial-gradient(circle,rgba(255,255,255,.1),rgba(255,255,255,.03));bottom:34px;opacity:.55;transition:opacity .15s}
+#stickL{left:34px} #stickR{right:34px}
+.stick.active{opacity:.95;transition:none}
+.stick .knob{position:absolute;left:38px;top:38px;width:54px;height:54px;border-radius:50%;background:rgba(255,255,255,.5);box-shadow:0 0 12px rgba(95,242,255,.5);transition:transform .08s}
+.stick.active .knob{transition:none}
+.stick span{position:absolute;left:0;right:0;top:-22px;text-align:center;font-size:12px;font-weight:700;color:rgba(255,255,255,.7);text-shadow:0 1px 3px #000}
+#stickR .knob{box-shadow:0 0 12px rgba(255,90,150,.55)}
+#sprint-btn{pointer-events:auto;position:absolute;right:56px;bottom:196px;width:86px;height:86px;border-radius:50%;border:2px solid rgba(95,242,255,.8);background:rgba(10,40,70,.55);color:#bff;font-weight:900;font-size:16px}
 #sprint-btn.on{background:rgba(60,180,255,.6)}
-.touch-only{display:none} body.touch .touch-only{display:inline-block} body.touch .pc-only{display:none}
+.touch-only{display:none} body.touch .touch-only,body.sticks #pause-btn{display:inline-block} body.touch .pc-only{display:none}
 .sp{display:none}
 @media (max-width:760px){.title-wrap{margin-right:0;margin-top:46vh}.sp{display:inline} h1{font-size:44px}}
 
 body.grabbing #announce{display:none}
+
+/* sinking into the belly: soft knit fabric wrapping the view edges + vignette */
+#sinkfx{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;
+  background:
+    radial-gradient(ellipse 72% 64% at 50% 46%, rgba(0,0,0,0) 52%, rgba(238,234,230,.55) 74%, rgba(248,245,242,.96) 96%),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.05) 0 3px, rgba(255,255,255,0) 3px 7px);
+  -webkit-mask-image:radial-gradient(ellipse 75% 68% at 50% 46%, transparent 50%, #000 80%); mask-image:radial-gradient(ellipse 75% 68% at 50% 46%, transparent 50%, #000 80%);
+  box-shadow:inset 0 0 160px 40px rgba(40,10,30,.55)}

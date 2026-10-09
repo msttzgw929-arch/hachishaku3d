@@ -7,9 +7,9 @@ function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 10139
 const R = rng(20260109);
 const pick = (a) => a[(R() * a.length) | 0];
 
-export const ROADS = [-70, -42, -14, 14, 42, 70];
-const ROAD_W = 8, HALF = 84;
-export const BOUND = 82;
+export const ROADS = [-126, -98, -70, -42, -14, 14, 42, 70, 98, 126];
+const ROAD_W = 8, HALF = 140;
+export const BOUND = 138;
 
 const SIGNS = [['クリニック', '#4cc4ff'], ['ラーメン', '#ff3b3b'], ['スナック夜蝶', '#ff4fd8'], ['カラオケ', '#ffd23b'], ['居酒屋', '#ff7a2b'], ['くすり', '#3bff8a'],
   ['焼き鳥', '#ff5a3b'], ['喫茶', '#ffb84c'], ['質屋', '#5ab0ff'], ['マッサージ', '#ff6fa8'], ['ホテル', '#b45aff'], ['古本', '#9cff5a'], ['麻雀', '#3bffd2'], ['整骨院', '#5af0ff'], ['バー', '#ff3b9a'], ['うどん', '#ffe03b']];
@@ -56,7 +56,7 @@ export class World {
 
   makeGround() {
     const asp = TX.makeAsphalt(), rough = TX.makeAsphaltRough();
-    asp.repeat.set(40, 40); rough.repeat.set(23, 23);
+    asp.repeat.set(66, 66); rough.repeat.set(38, 38);
     const g = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2 + 60, HALF * 2 + 60), new THREE.MeshStandardMaterial({ map: asp, roughnessMap: rough, roughness: 0.75, metalness: 0.15, color: 0xb0b0b8 }));
     g.rotation.x = -Math.PI / 2; g.receiveShadow = true; this.group.add(g);
     // block pavements (concrete tiles), road markings
@@ -105,17 +105,22 @@ export class World {
   }
 
   makeBuildings() {
+    this.parks = [];
     for (const b of this.blocks) {
-      const w = b.x1 - b.x0, d = b.z1 - b.z0;
-      // split block into lots with narrow alleys (2.8 - 3.4 m)
-      const ax = 2.8 + R() * 0.8, az = 2.8 + R() * 0.8;
-      const splitX = [b.x0, b.x0 + w * (0.4 + R() * 0.2) - ax / 2, NaN];
-      const sx = b.x0 + w * (0.38 + R() * 0.24), sz = b.z0 + d * (0.38 + R() * 0.24);
-      const xs = [[b.x0, sx - ax / 2], [sx + ax / 2, b.x1]], zs = [[b.z0, sz - az / 2], [sz + az / 2, b.z1]];
+      const w = b.x1 - b.x0, d = b.z1 - b.z0, cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
+      // open spaces: a central plaza, scattered parks and small plazas
+      if (Math.abs(cx) < 5 && Math.abs(cz) < 5) { this.makePlaza(b, true); continue; }
+      const edge = b.x0 <= -HALF + 0.1 || b.x1 >= HALF - 0.1 || b.z0 <= -HALF + 0.1 || b.z1 >= HALF - 0.1;
+      const r = R();
+      if (!edge && r < 0.11) { this.makePark(b); continue; }
+      if (!edge && r < 0.17) { this.makePlaza(b, false); continue; }
+      // split block into lots with narrow alleys (2.8 - 3.6 m); some blocks get a denser 3x3 alley grid
+      const n = R() < 0.32 ? 3 : 2;
+      const cuts = (a0, a1) => { const out = []; let prev = a0; for (let k = 1; k < n; k++) { const al = 2.8 + R() * 0.8; const c = a0 + (a1 - a0) * (k / n + (R() - 0.5) * 0.12); out.push([prev, c - al / 2]); prev = c + al / 2; } out.push([prev, a1]); return out; };
+      const xs = cuts(b.x0, b.x1), zs = cuts(b.z0, b.z1);
       for (const [x0, x1] of xs) for (const [z0, z1] of zs) {
         const lw = x1 - x0, ld = z1 - z0;
         if (lw < 3 || ld < 3) continue;
-        // sometimes subdivide large lots into 2 buildings along the longer side
         const parts = [];
         if (Math.max(lw, ld) > 12 && R() < 0.7) {
           if (lw > ld) { const m = x0 + lw * (0.4 + R() * 0.2); parts.push([x0, m - 0.7, z0, z1], [m + 0.7, x1, z0, z1]); }
@@ -127,6 +132,74 @@ export class World {
         }
       }
     }
+  }
+
+  parkAssets() {
+    if (this._pa) return this._pa;
+    const col = (g, c) => { const n = g.attributes.position.count, a = new Float32Array(n * 3), cc = new THREE.Color(c); for (let i = 0; i < n; i++) { a[i * 3] = cc.r; a[i * 3 + 1] = cc.g; a[i * 3 + 2] = cc.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
+    const strip = (g) => { g.deleteAttribute('uv'); return g.index ? g.toNonIndexed() : g; };
+    const trunk = strip(new THREE.CylinderGeometry(0.16, 0.24, 2.6, 8)); trunk.translate(0, 1.3, 0); col(trunk, 0x3a2a20);
+    const leaves = [];
+    for (const [x, y, z, r, c] of [[0, 3.4, 0, 1.7, 0x1f3b26], [0.8, 3.0, 0.3, 1.2, 0x24452c], [-0.7, 3.1, -0.4, 1.25, 0x1b3522], [0.1, 4.3, 0.1, 1.15, 0x2a4f33]]) { const g = strip(new THREE.IcosahedronGeometry(r, 1)); g.translate(x, y, z); leaves.push(col(g, c)); }
+    const tree = mergeGeometries([trunk, ...leaves]);
+    // cherry tree variant (pink, like a Japanese park at night)
+    const sak = mergeGeometries([trunk.clone(), ...leaves.map((g, i) => col(g.clone(), [0xc98aa0, 0xd99ab0, 0xb87890, 0xe8b0c4][i]))]);
+    const benchParts = [new THREE.BoxGeometry(1.8, 0.08, 0.5), new THREE.BoxGeometry(1.8, 0.45, 0.06), new THREE.BoxGeometry(0.08, 0.45, 0.45), new THREE.BoxGeometry(0.08, 0.45, 0.45)];
+    benchParts[0].translate(0, 0.45, 0); benchParts[1].translate(0, 0.75, -0.22); benchParts[2].translate(-0.8, 0.22, 0); benchParts[3].translate(0.8, 0.22, 0);
+    const bench = mergeGeometries(benchParts.map(strip).map((g, i) => col(g, i < 2 ? 0x6b4a32 : 0x3a3a3e)));
+    const torii = (() => { const p = [new THREE.CylinderGeometry(0.22, 0.25, 4.2, 10), new THREE.CylinderGeometry(0.22, 0.25, 4.2, 10), new THREE.BoxGeometry(5.0, 0.35, 0.5), new THREE.BoxGeometry(4.2, 0.25, 0.35)];
+      p[0].translate(-1.7, 2.1, 0); p[1].translate(1.7, 2.1, 0); p[2].translate(0, 4.35, 0); p[3].translate(0, 3.5, 0); return mergeGeometries(p.map(strip).map((g, i) => col(g, i === 2 ? 0x1a1a1a : 0xb3261e))); })();
+    const fountain = (() => { const p = [new THREE.CylinderGeometry(3.0, 3.1, 0.6, 32), new THREE.CylinderGeometry(0.5, 0.7, 1.6, 16), new THREE.CylinderGeometry(1.2, 0.9, 0.25, 24)];
+      p[0].translate(0, 0.3, 0); p[1].translate(0, 0.8, 0); p[2].translate(0, 1.6, 0); return mergeGeometries(p.map(strip).map(g => col(g, 0x8a8a90))); })();
+    const lampP = (() => { const a = strip(new THREE.CylinderGeometry(0.06, 0.08, 3.2, 8)); a.translate(0, 1.6, 0); return col(a, 0x2a2a2e); })();
+    const veg = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+    const sakMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, emissive: 0x2a0c18, emissiveIntensity: 0.6 });
+    const globe = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff0d0, emissiveIntensity: 3 });
+    const water = new THREE.MeshStandardMaterial({ color: 0x2a6a8a, emissive: 0x0a3a5a, emissiveIntensity: 0.8, roughness: 0.1, metalness: 0.3 });
+    const gc = TX.canvas(128, 128), gx = gc.getContext('2d'); gx.fillStyle = '#1d3320'; gx.fillRect(0, 0, 128, 128);
+    for (let i = 0; i < 2600; i++) { gx.fillStyle = `rgba(${40 + Math.random() * 40},${70 + Math.random() * 60},${40 + Math.random() * 30},0.6)`; gx.fillRect(Math.random() * 128, Math.random() * 128, 1, 2 + Math.random() * 2); }
+    const gt = new THREE.CanvasTexture(gc); gt.wrapS = gt.wrapT = THREE.RepeatWrapping; gt.colorSpace = THREE.SRGBColorSpace;
+    const grass = new THREE.MeshStandardMaterial({ map: gt, roughness: 0.95 });
+    const path = new THREE.MeshStandardMaterial({ color: 0x8a7f6c, roughness: 0.9 });
+    return (this._pa = { tree, sak, bench, torii, fountain, lampP, veg, sakMat, globe, water, grass, path });
+  }
+  addParkLamp(x, z) {
+    const A = this.parkAssets();
+    const m = new THREE.Mesh(A.lampP, A.veg); m.position.set(x, 0, z);
+    const g = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), A.globe); g.position.y = 3.3; m.add(g); this.group.add(m);
+    const lp = this.addProp(m, 0.15, 1, 'lamp');
+    this.lamps.push({ pos: new THREE.Vector3(x, 3.3, z), obj: null, color: new THREE.Color(0xfff0d0), power: 1.0, prop: lp });
+  }
+  addBench(x, z, rot) { const A = this.parkAssets(); const m = new THREE.Mesh(A.bench, A.veg); m.position.set(x, 0.14, z); m.rotation.y = rot; m.castShadow = true; this.group.add(m); this.addProp(m, 0.6, 1, 'small'); }
+  makePark(b) {
+    const A = this.parkAssets(); const m = 0.8, x0 = b.x0 + m, x1 = b.x1 - m, z0 = b.z0 + m, z1 = b.z1 - m, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, w = x1 - x0, d = z1 - z0;
+    const gg = new THREE.BoxGeometry(w, 0.12, d); const uv = gg.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * w / 4, uv.getY(k) * d / 4);
+    const gm = new THREE.Mesh(gg, A.grass); gm.position.set(cx, 0.2, cz); gm.receiveShadow = true; this.group.add(gm);
+    for (const [pw, pd] of [[w, 2.4], [2.4, d]]) { const p = new THREE.Mesh(new THREE.BoxGeometry(pw, 0.04, pd), A.path); p.position.set(cx, 0.27, cz); p.receiveShadow = true; this.group.add(p); }
+    const sakura = R() < 0.5;
+    for (let gx = x0 + 2.5; gx < x1 - 1.5; gx += 4.6) for (let gz = z0 + 2.5; gz < z1 - 1.5; gz += 4.6) {
+      if (Math.abs(gx - cx) < 2.4 || Math.abs(gz - cz) < 2.4 || R() < 0.2) continue;
+      const tx = gx + (R() - 0.5) * 1.6, tz = gz + (R() - 0.5) * 1.6, sk = sakura && R() < 0.75;
+      const t = new THREE.Mesh(sk ? A.sak : A.tree, sk ? A.sakMat : A.veg); t.position.set(tx, 0.2, tz); t.rotation.y = R() * 6.28; t.scale.setScalar(0.8 + R() * 0.5); t.castShadow = true; this.group.add(t);
+      this.addProp(t, 0.45, 1, 'tree');
+    }
+    for (const [bx, bz, r] of [[cx + 3.2, cz + 1.8, Math.PI], [cx - 3.2, cz - 1.8, 0], [cx + 1.8, cz - 3.2, -Math.PI / 2], [cx - 1.8, cz + 3.2, Math.PI / 2]]) if (R() < 0.8) this.addBench(bx, bz, r);
+    this.addParkLamp(cx + 1.6, cz + 1.6); this.addParkLamp(cx - 1.6, cz - 1.6);
+    if (R() < 0.45) { const t = new THREE.Mesh(A.torii, A.veg); t.position.set(cx, 0.2, z1 - 1.2); t.castShadow = true; this.group.add(t); this.addProp(t, 0.4, 2, 'torii', false); }
+    this.parks.push({ kind: 'park', cx, cz, w, d });
+  }
+  makePlaza(b, big) {
+    const A = this.parkAssets(); const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, w = b.x1 - b.x0, d = b.z1 - b.z0;
+    // tiled plaza floor (slightly lighter inlay ring)
+    const ring = new THREE.Mesh(new THREE.RingGeometry(4.2, 7.2, 48), new THREE.MeshStandardMaterial({ color: 0x77736a, roughness: 0.8 })); ring.rotation.x = -Math.PI / 2; ring.position.set(cx, 0.15, cz); ring.receiveShadow = true; this.group.add(ring);
+    const f = new THREE.Mesh(A.fountain, A.veg); f.position.set(cx, 0.14, cz); f.castShadow = true; f.receiveShadow = true; this.group.add(f); this.addProp(f, 3.1, big ? 3 : 2, 'fountain');
+    const wtr = new THREE.Mesh(new THREE.CircleGeometry(2.85, 32), A.water); wtr.rotation.x = -Math.PI / 2; wtr.position.y = 0.5; f.add(wtr);
+    this.lamps.push({ pos: new THREE.Vector3(cx, 1.2, cz), obj: null, color: new THREE.Color(0x6ac8ff), power: 0.7, prop: this.props[this.props.length - 1] });
+    for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2 + 0.39; this.addBench(cx + Math.cos(a) * 5.4, cz + Math.sin(a) * 5.4, -a - Math.PI / 2); }
+    for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) this.addParkLamp(cx + sx * (w / 2 - 2), cz + sz * (d / 2 - 2));
+    for (let k = 0; k < 4; k++) { const t = new THREE.Mesh(A.tree, A.veg); const a = k / 4 * Math.PI * 2; t.position.set(cx + Math.cos(a) * (w / 2 - 3.5), 0.14, cz + Math.sin(a) * (d / 2 - 3.5)); t.scale.setScalar(0.85); t.castShadow = true; this.group.add(t); this.addProp(t, 0.45, 1, 'tree'); }
+    if (big) for (let k = 0; k < 3; k++) this.addVendingFree(b.x0 + 2 + k * 1.1, b.z1 - 1.2, Math.PI);
+    this.parks.push({ kind: 'plaza', cx, cz, w, d });
   }
 
   nearestRoadSide(cx, cz, hw, hd) {
@@ -142,7 +215,7 @@ export class World {
   makeBuilding([x0, x1, z0, z1]) {
     const m = 0.2; x0 += m; x1 -= m; z0 += m; z1 -= m;
     const w = x1 - x0, d = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-    const centrality = 1 - Math.min(1, Math.hypot(cx, cz) / 90);
+    const centrality = 1 - Math.min(1, Math.hypot(cx, cz) / 150);
     const h = Math.round((5 + R() * 9 + R() * R() * 22 * (0.4 + centrality)) / 3.2) * 3.2 + 0.4;
     const grp = new THREE.Group(); grp.position.set(cx, 0, cz);
     const geo = new THREE.BoxGeometry(w, h, d);
@@ -271,7 +344,7 @@ export class World {
     // misc: trash bags, cones, bicycles-ish crates in alleys
     const bagMat = new THREE.MeshStandardMaterial({ color: 0x2a3a2a, roughness: 0.3, metalness: 0.1 });
     const coneMat = new THREE.MeshStandardMaterial({ color: 0xff5a1a, roughness: 0.6, emissive: 0x220800 });
-    for (let i = 0; i < 70; i++) {
+    for (let i = 0; i < 190; i++) {
       const b = pick(this.buildings); const side = (R() * 4) | 0;
       const x = side < 2 ? (side ? b.x1 + 0.5 : b.x0 - 0.5) : b.x0 + R() * b.w, z = side >= 2 ? (side === 3 ? b.z1 + 0.5 : b.z0 - 0.5) : b.z0 + R() * b.d;
       const m = R() < 0.6 ? new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 6), bagMat) : new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.7, 10), coneMat);
@@ -283,7 +356,7 @@ export class World {
     // distant towers with lit windows (like the reference background)
     const geos = [];
     for (let i = 0; i < 90; i++) {
-      const a = (i / 90) * Math.PI * 2 + R() * 0.05, rad = 125 + R() * 50;
+      const a = (i / 90) * Math.PI * 2 + R() * 0.05, rad = 205 + R() * 55;
       const w = 10 + R() * 18, h = 30 + R() * 90;
       const g = new THREE.BoxGeometry(w, h, w); const uv = g.attributes.uv;
       for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * w / 20, uv.getY(k) * h / 16);
@@ -293,7 +366,7 @@ export class World {
     const mat = new THREE.MeshBasicMaterial({ map: t.emissive, color: 0x8c8ca8, fog: false });
     const m = new THREE.Mesh(mergeGeometries(geos), mat); this.group.add(m);
     // aircraft warning lights
-    for (let i = 0; i < 18; i++) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.glowTex, color: 0xff2020, blending: THREE.AdditiveBlending, fog: false, depthWrite: false })); const a = R() * 6.28; s.position.set(Math.cos(a) * 140, 60 + R() * 60, Math.sin(a) * 140); s.scale.set(4, 4, 1); this.group.add(s); }
+    for (let i = 0; i < 18; i++) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.glowTex, color: 0xff2020, blending: THREE.AdditiveBlending, fog: false, depthWrite: false })); const a = R() * 6.28; s.position.set(Math.cos(a) * 220, 60 + R() * 60, Math.sin(a) * 220); s.scale.set(4, 4, 1); this.group.add(s); }
   }
 
   // ---------- path grid

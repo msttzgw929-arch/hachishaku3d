@@ -85,53 +85,64 @@ const S = {
   h: { pos: hachi.root.position, yaw: 0, path: null, pathT: 0, wp: 0, stun: 0, lunge: 0, lungeCd: 3, lostT: 0, sawPlayer: false, wasNear: false, tauntT: 6, smashCd: 0, exprT: 0, expr: null, stuckT: 0, lastPos: new THREE.Vector3(), speed: 0 },
   grab: null, overT: 0, angryT: 0,
 };
-window.__game = { S, hachi, world, audio, camera, renderer, scene };
+window.__game = { S, hachi, world, audio, camera, renderer, scene, get info() { return { calls: renderer.info.render.calls, tris: renderer.info.render.triangles, buildings: world.buildings.length, props: world.props.length, parks: world.parks.length }; } };
 
 // ---------------- input
 const keys = {};
 let mouseDX = 0, mouseDY = 0, sprintTouch = false;
-const joy = { id: null, ox: 0, oy: 0, x: 0, y: 0 }, look = { id: null, x: 0, y: 0 };
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') { e.preventDefault(); if (S.mode === 'grab') slap(); }
-  if ((e.code === 'Escape' || e.code === 'KeyP') && S.mode === 'play' && isTouch) pause();
+  if ((e.code === 'Escape' || e.code === 'KeyP') && S.mode === 'play' && (isTouch || stickUI)) pause();
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 renderer.domElement.addEventListener('mousedown', (e) => {
   if (isTouch) return;
   if (S.mode === 'grab') { slap(); return; }
-  if ((S.mode === 'play') && document.pointerLockElement !== renderer.domElement) lockPointer();
+  if ((S.mode === 'play') && !stickUI && document.pointerLockElement !== renderer.domElement) lockPointer();
 });
 document.addEventListener('mousedown', (e) => { if (S.mode === 'grab' && !isTouch && e.target !== renderer.domElement && !e.target.closest('button')) slap(); });
 addEventListener('mousemove', (e) => { if (document.pointerLockElement === renderer.domElement) { mouseDX += e.movementX; mouseDY += e.movementY; } });
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement !== renderer.domElement && S.mode === 'play' && !isTouch && !S.ignoreUnlock) pause();
+  if (document.pointerLockElement !== renderer.domElement && S.mode === 'play' && !isTouch && !stickUI && !S.ignoreUnlock) pause();
   S.ignoreUnlock = false;
 });
-function lockPointer() { if (isTouch) return; try { const p = renderer.domElement.requestPointerLock(); if (p && p.catch) p.catch(() => { }); } catch (e) { } }
+function lockPointer() { if (isTouch || stickUI) return; try { const p = renderer.domElement.requestPointerLock(); if (p && p.catch) p.catch(() => { }); } catch (e) { } }
 
-// touch
-const tEl = document.body;
-tEl.addEventListener('touchstart', (e) => {
-  if (e.target.closest('button') || e.target.closest('.panel')) return;
-  for (const t of e.changedTouches) {
-    if (S.mode === 'grab') { slap(); continue; }
-    if (S.mode !== 'play') continue;
-    if (t.clientX < innerWidth * 0.45 && joy.id === null) { joy.id = t.identifier; joy.ox = t.clientX; joy.oy = t.clientY; joy.x = joy.y = 0; const b = $('stick-base'); b.style.display = 'block'; b.style.left = (t.clientX - 65) + 'px'; b.style.top = (t.clientY - 65) + 'px'; }
-    else if (look.id === null) { look.id = t.identifier; look.x = t.clientX; look.y = t.clientY; }
-  }
+// ---- dual virtual sticks (left: move, right: look). Pointer events -> works for touch, and for mouse when enabled on desktop (T key)
+let stickUI = isTouch;
+function setStickUI(on) { stickUI = on; document.body.classList.toggle('sticks', on); if (S.mode === 'play') $('touch').classList.toggle('hidden', !on); if (on && document.pointerLockElement) { S.ignoreUnlock = true; document.exitPointerLock(); } }
+if (isTouch) document.body.classList.add('sticks');
+addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !isTouch && (S.mode === 'play' || S.mode === 'title')) setStickUI(!stickUI); });
+const STICK_R = 58, DZ = 0.12;
+const sticks = { L: { el: null, id: null, ox: 0, oy: 0, x: 0, y: 0 }, R: { el: null, id: null, ox: 0, oy: 0, x: 0, y: 0 } };
+const lookVel = { x: 0, y: 0 };
+function stickEls() { if (!sticks.L.el) { sticks.L.el = $('stickL'); sticks.R.el = $('stickR'); } }
+function stickDown(st, e) {
+  stickEls(); st.id = e.pointerId; st.ox = e.clientX; st.oy = e.clientY; st.x = st.y = 0;
+  const el = st.el; el.classList.add('active'); el.style.left = (e.clientX - 65) + 'px'; el.style.top = (e.clientY - 65) + 'px'; el.style.right = el.style.bottom = 'auto';
+}
+function stickMove(st, e) {
+  let dx = e.clientX - st.ox, dy = e.clientY - st.oy; const l = Math.hypot(dx, dy); if (l > STICK_R) { dx *= STICK_R / l; dy *= STICK_R / l; }
+  st.el.firstElementChild.style.transform = `translate(${dx}px,${dy}px)`;
+  const m = Math.min(1, l / STICK_R); const k = m < DZ ? 0 : (m - DZ) / (1 - DZ); const n = l > 0 ? 1 / Math.max(l, 1e-6) : 0;
+  st.x = dx * n * k; st.y = dy * n * k;
+}
+function stickUp(st) { stickEls(); st.id = null; st.x = st.y = 0; const el = st.el; el.classList.remove('active'); el.firstElementChild.style.transform = ''; el.style.left = el.style.top = el.style.right = el.style.bottom = ''; }
+function resetSticks() { for (const k of ['L', 'R']) if (sticks[k].el || $('stickL')) stickUp(sticks[k]); }
+document.body.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && !stickUI) return;
+  if (e.target.closest('button') || e.target.closest('.panel') || e.target.closest('.screen')) return;
+  if (S.mode === 'grab') { if (e.pointerType !== 'mouse') slap(); return; }
+  if (S.mode !== 'play') return;
+  const st = e.clientX < innerWidth * 0.45 ? sticks.L : sticks.R;
+  if (st.id === null) { stickDown(st, e); try { document.body.setPointerCapture(e.pointerId); } catch (_) { } }
   e.preventDefault();
 }, { passive: false });
-tEl.addEventListener('touchmove', (e) => {
-  for (const t of e.changedTouches) {
-    if (t.identifier === joy.id) { let dx = t.clientX - joy.ox, dy = t.clientY - joy.oy; const l = Math.hypot(dx, dy), m = 55; if (l > m) { dx *= m / l; dy *= m / l; } joy.x = dx / m; joy.y = dy / m; $('stick-knob').style.transform = `translate(${dx}px,${dy}px)`; }
-    else if (t.identifier === look.id) { mouseDX += (t.clientX - look.x) * 2.2; mouseDY += (t.clientY - look.y) * 2.2; look.x = t.clientX; look.y = t.clientY; }
-  }
-  if (S.mode !== 'title') e.preventDefault();
-}, { passive: false });
-const tEnd = (e) => { for (const t of e.changedTouches) { if (t.identifier === joy.id) { joy.id = null; joy.x = joy.y = 0; $('stick-base').style.display = 'none'; $('stick-knob').style.transform = ''; } if (t.identifier === look.id) look.id = null; } };
-tEl.addEventListener('touchend', tEnd); tEl.addEventListener('touchcancel', tEnd);
+document.body.addEventListener('pointermove', (e) => { for (const k of ['L', 'R']) if (sticks[k].id === e.pointerId) stickMove(sticks[k], e); });
+const pEnd = (e) => { for (const k of ['L', 'R']) if (sticks[k].id === e.pointerId) stickUp(sticks[k]); };
+document.body.addEventListener('pointerup', pEnd); document.body.addEventListener('pointercancel', pEnd);
 $('sprint-btn').addEventListener('touchstart', (e) => { sprintTouch = !sprintTouch; $('sprint-btn').classList.toggle('on', sprintTouch); e.preventDefault(); e.stopPropagation(); }, { passive: false });
 $('pause-btn').addEventListener('click', () => { if (S.mode === 'play') pause(); });
 
@@ -155,15 +166,15 @@ function flash(color = '#fff', a = 0.6) { const f = $('flash'); f.style.backgrou
 function placeHachiTitle() {
   // title scene: she stands in an alley, camera slowly circles low
   hachi.setStage(0, true);
-  hachi.root.position.set(ROADS[2] + 0, 0, ROADS[2] - 9);
+  hachi.root.position.set(ROADS[4] + 0, 0, ROADS[4] - 9);
   hachi.root.rotation.y = 0;
 }
 function resetGame() {
   S.time = 0; S.hearts = 3; S.irritation = 0; S.stage = 0; S.maxStage = 0; S.buildings = 0; S.escapes = 0; S.catches = 0;
   S.stamina = 100; S.exhausted = false; S.invuln = 2; S.vel.set(0, 0, 0); S.knock.set(0, 0, 0);
-  S.pos.set(ROADS[2] + 0, 0, ROADS[3] - 2); S.yaw = Math.PI; S.pitch = 0.05;
+  S.pos.set(ROADS[4] + 0, 0, ROADS[5] - 2); S.yaw = Math.PI; S.pitch = 0.05;
   hachi.setStage(0, true);
-  const h = S.h; h.pos.set(ROADS[2], 0, ROADS[2] - 4); h.yaw = 0; hachi.root.rotation.y = 0; h.path = null; h.stun = 0; h.lunge = 0; h.lungeCd = 4; h.lostT = 0; h.wasNear = false; h.tauntT = 7; h.smashCd = 0; h.stuckT = 0;
+  const h = S.h; h.pos.set(ROADS[4], 0, ROADS[4] - 4); h.yaw = 0; hachi.root.rotation.y = 0; h.path = null; h.stun = 0; h.lunge = 0; h.lungeCd = 4; h.lostT = 0; h.wasNear = false; h.tauntT = 7; h.smashCd = 0; h.stuckT = 0;
   hachi.face.set('smug');
 }
 async function startGame() {
@@ -172,7 +183,7 @@ async function startGame() {
   await audio.init();
   resetGame();
   S.mode = 'play';
-  $('hud').classList.remove('hidden'); if (isTouch) $('touch').classList.remove('hidden');
+  $('hud').classList.remove('hidden'); if (stickUI) $('touch').classList.remove('hidden');
   setTimeout(() => { if (S.mode === 'play') { audio.say('spot', headPos()); setExpr('delight', 1.4); } }, 900);
   announce('逃げろ！<small>八尺様に捕まるな！</small>', 2.2);
 }
@@ -210,7 +221,7 @@ function startGrab() {
   setExpr('delight', 99);
   hachi.bump(1.2);
   if (!final) { $('grab').classList.remove('hidden'); updateGrabUI(); }
-  joy.id = null; joy.x = joy.y = 0; $('stick-base').style.display = 'none';
+  resetSticks();
 }
 function updateGrabUI() { const g = S.grab; $('grab-bar').style.width = (100 * g.hits / g.need) + '%'; $('grab-count').textContent = `${g.hits} / ${g.need}`; $('grab-timer').style.width = (100 * (1 - g.t / g.limit)) + '%'; }
 let slapSide = 1;
@@ -218,6 +229,7 @@ function slap() {
   const g = S.grab; if (!g || g.final || g.done) return;
   g.hits++; slapSide = -slapSide; const h = handObjs[slapSide > 0 ? 1 : 0]; h.userData.t = 0;
   hachi.slap(); audio.slap(); S.shake = Math.max(S.shake, 0.18);
+  S.dent.v -= 1.9 * hachi.bodyScale; // pop out a little, then sink back with a wobble
   setExpr('hurt', 0.45);
   if (Math.random() < 0.5 || g.hits === 1) audio.say('slap', headPos());
   updateGrabUI();
@@ -229,6 +241,7 @@ function escapeGrab() {
   S.knock.copy(dir).multiplyScalar(11 + hachi.radius * 2.5); S.invuln = 2.6; S.h.stun = 1.6; S.yaw = Math.atan2(-dir.x, -dir.z) + Math.PI;
   audio.escape(); audio.say('escape', headPos(), true); setExpr('surprised', 1.0); S.h.nextExpr = 'pout';
   hachi.slap(); flash('#5ff2ff', 0.25);
+  S.dent.v -= 2.6 * hachi.bodyScale; hachi.jigV.z += 2.4; hachi.jigV.y += 1.6; hachi.jigV.x += (Math.random() - 0.5) * 1.5; hachi.rip = 1.4; // big spring-back jiggle
   S.irritation = Math.min(99, S.irritation + 12);
   announce('脱出成功！', 1.4);
 }
@@ -250,12 +263,17 @@ function updatePlayer(dt) {
   // look
   const sens = 0.0022;
   S.yaw -= mouseDX * sens; S.pitch -= mouseDY * sens; mouseDX = mouseDY = 0;
-  S.pitch = THREE.MathUtils.clamp(S.pitch, -1.2, 1.35);
+  { // right stick: rate-based look with smoothing and an expo curve for fine aim
+    const rx = sticks.R.x, ry = sticks.R.y, kk = 1 - Math.exp(-dt * 12);
+    lookVel.x += (rx * Math.abs(rx) * 2.9 - lookVel.x) * kk; lookVel.y += (ry * Math.abs(ry) * 2.1 - lookVel.y) * kk;
+    S.yaw -= lookVel.x * dt; S.pitch -= lookVel.y * dt;
+  }
+  S.pitch = THREE.MathUtils.clamp(S.pitch, -1.2, 1.48);
   // keyboard yaw for arrows left/right? -> strafe. (simple controls)
   let mx = 0, mz = 0;
   if (keys.KeyW || keys.ArrowUp) mz -= 1; if (keys.KeyS || keys.ArrowDown) mz += 1;
   if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
-  mx += joy.x; mz += joy.y;
+  mx += sticks.L.x; mz += sticks.L.y;
   const ml = Math.hypot(mx, mz); if (ml > 1) { mx /= ml; mz /= ml; }
   const wantSprint = (keys.ShiftLeft || keys.ShiftRight || sprintTouch) && ml > 0.1;
   const sprint = wantSprint && !S.exhausted;
@@ -371,17 +389,22 @@ function smashNear(rad, force) {
 function updateGrab(dt) {
   const g = S.grab; g.t += dt;
   const h = S.h;
-  // pull player against the belly
+  // sink into the belly: find the contact point on the upper-front of the dome, dent it, press the camera in
   hachi.bellyCenter(bc);
   const dir = tmp.set(S.pos.x - bc.x, 0, S.pos.z - bc.z); if (dir.lengthSq() < 1e-4) dir.set(Math.sin(h.yaw), 0, Math.cos(h.yaw)); dir.normalize();
-  const target = tmp2.copy(bc).addScaledVector(dir, hachi.radius * (1 + Math.min(0.5, S.stage * 0.08)) + 0.62);
-  S.pos.lerp(target, 1 - Math.exp(-dt * 8));
+  const bs = hachi.bodyScale, Rw = hachi.radius;
+  const aim = tmp2.copy(bc).addScaledVector(dir, Rw * 3); aim.y = hachi.rollMesh.getWorldPosition(dentP).y + hachi.rollMesh.scale.y * bs * 0.9;
+  hachi.surfacePoint(aim, dentP, dentN);
+  updateDent(dt);
+  const camP = tmp2.copy(dentP).addScaledVector(dentN, -0.5 * S.dent.d + 0.07 * bs);
+  S.pos.x += (camP.x - S.pos.x) * (1 - Math.exp(-dt * 10)); S.pos.z += (camP.z - S.pos.z) * (1 - Math.exp(-dt * 10));
+  S.camY = camP.y;
   // face the player
   const ty = Math.atan2(S.pos.x - h.pos.x, S.pos.z - h.pos.z); let d = ty - h.yaw; d = Math.atan2(Math.sin(d), Math.cos(d)); h.yaw += d * (1 - Math.exp(-dt * 6)); hachi.root.rotation.y = h.yaw;
-  // camera looks up at her face
+  // camera looks up at her face (she looks down at you)
   const hp = headPos(); const lx = hp.x - S.pos.x, lz = hp.z - S.pos.z;
   const wantYaw = Math.atan2(-lx, -lz); let dy = wantYaw - S.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); S.yaw += dy * (1 - Math.exp(-dt * 6));
-  const wantPitch = Math.atan2(hp.y - 1.02 - (S.gl || 0), Math.hypot(lx, lz)) * 0.85; S.pitch += (wantPitch - S.pitch) * (1 - Math.exp(-dt * 6));
+  const wantPitch = Math.atan2(hp.y - S.camY, Math.hypot(lx, lz)) * 0.8; S.pitch += (wantPitch - S.pitch) * (1 - Math.exp(-dt * 6));
   mouseDX = mouseDY = 0;
   if (Math.random() < dt * 3) hachi.jigV.y += 0.3; // she squeezes
   if (g.final) { if (g.t > 3.8) gameOver(); return; }
@@ -389,6 +412,24 @@ function updateGrab(dt) {
   if (!g.done && g.t > g.limit) { g.final = true; g.t = 0; $('grab').classList.add('hidden'); hands.visible = false; audio.say('over', headPos(), true); setExpr('delight', 99); S.hearts = 0; }
   // hands animation
   for (const hnd of handObjs) { const u = hnd.userData; u.t = Math.min(1, u.t + dt * 6); const p = Math.sin(u.t * Math.PI); hnd.position.set(u.s * (0.26 - p * 0.08), -0.3 + p * 0.05, -0.34 - p * 0.14); hnd.rotation.set(0.5 - p * 0.5, 0, u.s * 0.35); }
+}
+
+const dentP = new THREE.Vector3(), dentN = new THREE.Vector3();
+S.dent = { d: 0, v: 0 };
+function dentTarget() {
+  if (S.mode !== 'grab') return 0;
+  const bs = hachi.bodyScale, g = S.grab, t = performance.now() / 1000;
+  const base = (g && g.final ? 0.34 : 0.26) * bs;
+  return base + Math.sin(t * 1.7) * 0.03 * bs + Math.max(0, Math.sin(t * 0.85)) * 0.025 * bs; // slow squishy breathing / pressing pulses
+}
+function updateDent(dt) {
+  const D = S.dent, k = 38, c = 4.2;
+  D.v += (k * (dentTarget() - D.d) - c * D.v) * dt; D.d += D.v * dt;
+  const r = 0.27 * hachi.bodyScale + 0.07 * hachi.radius;
+  hachi.setDent(dentP, r, D.d);
+  const a = THREE.MathUtils.clamp(D.d / (0.22 * hachi.bodyScale), 0, 1.2);
+  $('sinkfx').style.opacity = Math.min(1, a).toFixed(3);
+  audio.setMuffle && audio.setMuffle(Math.min(1, a));
 }
 
 function updateLights() {
@@ -403,8 +444,8 @@ function updateLights() {
 
 function updateCamera(dt, dist) {
   // during a restraint she hugs you up against her upper belly so you face her
-  const glT = S.mode === 'grab' ? Math.max(0, hachi.headWorldY - 0.62 * hachi.bodyScale - 1.02) : 0;
-  S.gl = (S.gl || 0) + (glT - (S.gl || 0)) * (1 - Math.exp(-dt * 4));
+  const glT = S.mode === 'grab' ? (S.camY || 1.02) - 1.02 : 0;
+  S.gl = (S.gl || 0) + (glT - (S.gl || 0)) * (1 - Math.exp(-dt * (S.mode === 'grab' ? 9 : 4)));
   const eye = 1.02 + S.gl;
   S.shake = Math.max(0, S.shake - dt * 1.6);
   const sh = S.shake * S.shake;
@@ -423,6 +464,10 @@ function frame() {
   let dt = Math.min(0.05, clock.getDelta());
   if (window.__fixedDt) dt = window.__fixedDt;
   for (let i = 0; i < (window.__simSteps || 1); i++) tick(dt);
+  if (window.__topdown) { // debug: whole-map overview
+    camera.position.set(0, 300, 0.01); camera.up.set(0, 0, -1); camera.lookAt(0, 0, 0); camera.fov = 52; camera.updateProjectionMatrix();
+    scene.fog.density = 0.0006; world.cull(camera.position, 1e4); renderer.toneMappingExposure = window.__topdown;
+  }
   composer.render();
   // adaptive resolution
   fpsAcc += dt; fpsN++;
@@ -443,6 +488,7 @@ function tick(dt) {
   } else if (S.mode === 'play' || S.mode === 'grab' || S.mode === 'over') {
     if (S.mode === 'play') { S.time += dt; updatePlayer(dt); }
     if (S.mode === 'grab') updateGrab(dt);
+    else if (Math.abs(S.dent.d) > 1e-3 || Math.abs(S.dent.v) > 1e-3) { updateDent(dt); if (Math.abs(S.dent.d) < 2e-3 && Math.abs(S.dent.v) < 2e-2) { S.dent.d = S.dent.v = 0; updateDent(0); } }
     if (S.mode !== 'over') dist = updateHachi(dt);
     const talk = audio.voiceLevel();
     hachi.update(dt, { speed: S.mode === 'play' ? S.h.speed : 0, look: camera.position, mode: S.mode === 'grab' ? 'hug' : (S.h.stun > 0 ? 'stun' : 'walk'), talk });
@@ -494,4 +540,4 @@ $('start-btn').disabled = false;
 frame();
 window.__ready = true;
 // expose helpers for automated tests
-Object.assign(window.__game, { startGame, startGrab, slap, stageUp, smashBuilding, gameOver, toTitle, setExpr });
+Object.assign(window.__game, { setStickUI, startGame, startGrab, slap, stageUp, smashBuilding, gameOver, toTitle, setExpr });

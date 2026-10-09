@@ -1,10 +1,9 @@
 // Hachishaku-sama: SDF-sculpted skinned body (surface nets), jiggly belly dome, procedural knit shading.
 import * as THREE from 'three';
-import { makeHair } from './textures.js';
+import { hairMaterial, cardGeometry, HairChain } from './hair.js';
 import { Face } from './face.js';
 import { sdEllipsoid, sdRoundCone, smin, surfaceNets } from './sdf.js';
 
-const HAIRTEX = makeHair();
 const KNIT_COL = 0xf4f2ef, SKIN_COL = new THREE.Color(0xf6e4de);
 
 // ---------- procedural rib knit (fine vertical ribs, fades with distance, sheen + wrap-ish light)
@@ -18,7 +17,7 @@ function knitMaterial({ ribs = 110, amp = 0.55, mode = 'radial', extra = {}, jig
     const body = mode === 'body';
     vs = (body ? 'attribute float armW; attribute float armPh; attribute vec3 ribTan; attribute float cloth;\n' : '') +
       'varying vec3 vRest; varying vec3 vTanV; varying float vArmW; varying float vArmPh; varying float vCloth;\n' +
-      (jiggle ? 'uniform vec3 uJig; uniform float uRip; uniform float uFloor; uniform float uTime; uniform float uBreath;\n' : '') +
+      (jiggle ? 'uniform vec3 uJig; uniform float uRip; uniform float uFloor; uniform float uTime; uniform float uBreath; uniform vec4 uDent; uniform float uDentD; uniform vec3 uDentS;\nfloat dentH(float d, float r, float D){ float g = exp(-(d*d)/(r*r)); float q = (d - 1.3*r)/(0.5*r); return -D*g + 0.32*D*exp(-q*q); }\nfloat dentHd(float d, float r, float D){ float g = exp(-(d*d)/(r*r)); float q = (d - 1.3*r)/(0.5*r); return D*2.0*d/(r*r)*g - 0.32*D*2.0*q/(0.5*r)*exp(-q*q); }\n' : '') +
       (skirt ? 'uniform vec2 uLegL; uniform vec2 uLegR; uniform float uTime; uniform float uSkTop; uniform float uSkOff;\n' : '') + vs;
     let tanExpr = body ? 'mix(normalize(vec3(position.z, 0.0, -position.x) + 1e-5), ribTan, armW)' : 'normalize(vec3(position.z, 0.0, -position.x) + 1e-5)';
     vs = vs.replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -31,7 +30,12 @@ function knitMaterial({ ribs = 110, amp = 0.55, mode = 'radial', extra = {}, jig
       float rd = length(position.xy - vec2(0.0, -0.05));
       transformed += normal * uRip * sin(rd * 13.0 - uTime * 26.0) * exp(-rd * 1.2) * w * 0.03;
       float fl = uFloor + 0.05;
-      if (transformed.y < fl) { float t = fl - transformed.y; transformed.y = fl - t * 0.2; transformed.xz *= 1.0 + t * 0.3; }` : ''}
+      if (transformed.y < fl) { float t = fl - transformed.y; transformed.y = fl - t * 0.2; transformed.xz *= 1.0 + t * 0.3; }
+      if (uDentD > 0.0005 || uDentD < -0.0005) {
+        vec3 pm = position * uDentS, pc = uDent.xyz * uDentS; float dd = length(pm - pc);
+        float hh = dentH(dd, uDent.w, uDentD);
+        transformed += normal * hh / uDentS;
+      }` : ''}
       ${skirt ? `
       float hf = clamp(1.0 - position.y / uSkTop, 0.0, 1.0); hf = pow(hf, 1.6);
       float r = max(length(position.xz), 0.001);
@@ -42,6 +46,12 @@ function knitMaterial({ ribs = 110, amp = 0.55, mode = 'radial', extra = {}, jig
       transformed.xz *= 1.0 + sin(uTime * 2.0 + atan(position.x, position.z) * 5.0) * 0.01 * hf;
       transformed.z += uSkOff * clamp(1.0 - position.y / uSkTop, 0.0, 1.0);` : ''}
     `);
+    if (jiggle) vs = vs.replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+      if (uDentD > 0.0005 || uDentD < -0.0005) {
+        vec3 pm0 = position * uDentS, pc0 = uDent.xyz * uDentS; vec3 dv = pm0 - pc0; float d0 = length(dv);
+        vec3 nn = normalize(objectNormal); vec3 tg = dv - nn * dot(dv, nn); float tl = length(tg);
+        if (tl > 1e-4) objectNormal = normalize(nn - (tg / tl) * dentHd(d0, uDent.w, uDentD) * 1.0);
+      }`);
     // tangent through skinning
     const tanCode = `vec3 tanO = ${tanExpr};\n#ifdef USE_SKINNING\n tanO = (skinMatrix * vec4(tanO, 0.0)).xyz;\n#endif\n vTanV = normalize(normalMatrix * tanO);`;
     vs = vs.replace('#include <defaultnormal_vertex>', '#include <defaultnormal_vertex>\n' + tanCode);
@@ -138,8 +148,7 @@ export class Hachi {
     this.root = new THREE.Group();
     this.body = new THREE.Group(); this.root.add(this.body);
     this.U = { uTime: { value: 0 } };
-    this.bellyU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 } };
-    this.hairU = { uSway: { value: new THREE.Vector3() }, uTime: this.U.uTime };
+    this.bellyU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 }, uDent: { value: new THREE.Vector4(0, 0, 1, 0.5) }, uDentD: { value: 0 }, uDentS: { value: new THREE.Vector3(1, 1, 1) } };
     this.skirtU = { uLegL: { value: new THREE.Vector2() }, uLegR: { value: new THREE.Vector2() }, uTime: this.U.uTime, uSkTop: { value: 1.42 }, uSkOff: { value: 0 } };
     this.face = new Face();
     this.build();
@@ -266,7 +275,7 @@ export class Hachi {
     this.belly = new THREE.Mesh(bg, knitMaterial({ ribs: 190, amp: 0.4, jiggle: this.bellyU, key: 'belly' }));
     this.body.add(this.belly);
     // upper belly roll: a smaller round bulge riding on top of the dome (visible crease where they meet)
-    this.rollU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 } };
+    this.rollU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 }, uDent: { value: new THREE.Vector4(0, 0, 1, 0.5) }, uDentD: { value: 0 }, uDentS: { value: new THREE.Vector3(1, 1, 1) } };
     this.rollMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 128, 72), knitMaterial({ ribs: 150, amp: 0.4, jiggle: this.rollU, key: 'roll' }));
     this.body.add(this.rollMesh);
 
@@ -281,30 +290,55 @@ export class Hachi {
     this.faceMesh = new THREE.Mesh(fg, new THREE.MeshStandardMaterial({ map: this.face.tex, transparent: true, roughness: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
     this.faceMesh.renderOrder = 2; head.add(this.faceMesh);
 
-    // ---------- hair: glossy black, hime cut
-    const hairMat = (top, len, key, rx = 4, ry = 1) => { const t = HAIRTEX.clone(); t.repeat.set(rx, ry); t.needsUpdate = true; return addSway(new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: t, roughness: 0.32, metalness: 0.05, clearcoat: 0.5, clearcoatRoughness: 0.35, side: THREE.DoubleSide }), this.hairU, top, len, key); };
+    // ---------- hair: silky black hime cut (strand cards + Kajiya-Kay sheen + spring chains)
+    this.hairU = { uTime: this.U.uTime, uHL: { value: 0.9 } };
     const capR = rH * 1.085;
-    head.add(new THREE.Mesh(deformHead(new THREE.SphereGeometry(capR, 72, 36, 0, Math.PI * 2, 0, 1.28), rH), hairMat(-5, 1, 'hcap', 6, 1)));
-    head.add(new THREE.Mesh(deformHead(new THREE.SphereGeometry(capR * 1.01, 72, 44, Math.PI / 2 + 0.74, Math.PI * 2 - 1.48, 0, 2.55), rH), hairMat(-5, 1, 'hback', 6, 1)));
-    // long back hair falling past the waist (attached to neck bone)
-    const LH = 1.05;
-    const lh = new THREE.CylinderGeometry(rH * 1.1, 0.34, LH, 56, 24, true, 0.9, Math.PI * 2 - 1.8);
-    lh.translate(0, -LH / 2, 0);
-    { const p = lh.attributes.position; for (let i = 0; i < p.count; i++) { const y = -p.getY(i); const x = p.getX(i), z = p.getZ(i); const sh = Math.min(1, y / 0.3); p.setX(i, x * (1 + 0.25 * sh)); p.setZ(i, z * 0.8 - 0.05 * sh); } lh.computeVertexNormals(); }
-    const lhm = new THREE.Mesh(lh, hairMat(0, LH, 'hlong', 8, 1)); lhm.position.set(0, 0.3, -0.03); B.neck.add(lhm);
-    // front side locks: over the shoulders, down the chest
-    for (const s of [-1, 1]) {
-      const NB = B.neck.userData.abs, F0 = this.sdf;
-      const fz = (x, y) => { let z = 0.42; while (z > -0.1 && F0(x, y, z) > 0) z -= 0.002; return z; };
-      const pts = []; for (let i = 0; i <= 20; i++) { const t = i / 20; const y = 0.28 - t * 0.74; const x = s * (0.112 + t * 0.035); const ay = NB.y + y;
-        const zb = ay < 2.16 ? fz(x, ay) + 0.02 : 0.03; const zc = Math.max(0.03, zb) - NB.z; pts.push(new THREE.Vector3(x, y, zc)); }
-      for (let i = 1; i < 20; i++) pts[i].z = (pts[i - 1].z + pts[i].z * 2 + pts[i + 1].z) / 4;
-      const tube = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 1, 12, false);
-      { const p = tube.attributes.position; // flatten into a ribbon of hair
-        for (let i = 0; i < p.count; i++) { const k = Math.floor(i / 13), t = k / 40; const c = new THREE.CatmullRomCurve3(pts).getPoint(Math.min(1, t)); const dx = p.getX(i) - c.x, dy = p.getY(i) - c.y, dz = p.getZ(i) - c.z; const wdt = 0.05 * (1 - t * 0.45), th = 0.011; const l = Math.hypot(dx, dy, dz) || 1; p.setXYZ(i, c.x + dx / l * wdt * (Math.abs(dx / l) + 0.25), c.y + dy / l * th, c.z + dz / l * th * 1.4); }
-        tube.computeVertexNormals(); }
-      const m = new THREE.Mesh(tube, hairMat(0.3, 0.62, 'hfront', 1, 2)); B.neck.add(m);
-    }
+    const downTan = (g) => { const p = g.attributes.position, n = g.attributes.normal, T = []; const d = new THREE.Vector3(), nn = new THREE.Vector3();
+      for (let i = 0; i < p.count; i++) { nn.fromBufferAttribute(n, i); d.set(0, -1, 0).addScaledVector(nn, nn.y).normalize(); if (d.lengthSq() < 0.5) d.set(0, 0, 1); T.push(d.x, d.y, d.z); }
+      g.setAttribute('hTan', new THREE.Float32BufferAttribute(T, 3)); return g; };
+    const capMat = hairMaterial({ opaque: true, U: this.hairU, key: 'cap', repeatX: 6 });
+    head.add(new THREE.Mesh(downTan(deformHead(new THREE.SphereGeometry(capR, 96, 40, 0, Math.PI * 2, 0, 1.28), rH)), capMat));
+    head.add(new THREE.Mesh(downTan(deformHead(new THREE.SphereGeometry(capR * 1.01, 96, 48, Math.PI / 2 + 0.74, Math.PI * 2 - 1.48, 0, 2.55), rH)), capMat));
+    // blunt bang fringe: short cards along the cut edge
+    { const cards = []; const yc = 0; for (let k = 0; k < 26; k++) { const th = -0.95 + 1.9 * (k + 0.5) / 26; const pts = [];
+        for (let i = 0; i <= 6; i++) { const t = i / 6; const ang = 1.0 + t * 0.32; const r = capR * 1.005 + 0.002 * t; pts.push(new THREE.Vector3(Math.sin(th) * Math.sin(ang) * r, Math.cos(ang) * r * 1.1 + yc, Math.cos(th) * Math.sin(ang) * r * (1 - 0.06 * t))); }
+        cards.push({ pts, seed: Math.random(), width: 0.026, u0: Math.random(), du: 0.2, t0: 0, tScale: 0.15, out: () => new THREE.Vector3(Math.sin(th), 0, Math.cos(th)) }); }
+      const fg = cardGeometry(cards); const fr = new THREE.Mesh(fg, hairMaterial({ U: this.hairU, key: 'fringe' })); head.add(fr); }
+    // long back hair (anchored on the neck bone), 3 layers of cards
+    const NB = B.neck.userData.abs, HC = new THREE.Vector3(0, B.head.userData.abs.y - NB.y + 0.105, 0.012 + 0.01);
+    const backPath = (th, layer, len, jit) => { const pts = [];
+      for (let i = 0; i <= 22; i++) { const t = i / 22; const ys = HC.y + 0.1 - t * len;
+        const dy = (ys - HC.y) / 1.12; const head = Math.sqrt(Math.max(0, 0.1395 * 0.1395 - dy * dy));
+        let Rr = ys > HC.y ? head : 0.1395; Rr += 0.008 * layer + jit * 0.004;
+        const fan = ssr(HC.y - 0.22, HC.y - 0.62, ys);
+        const push = ssr(HC.y - 0.25, HC.y - 0.5, ys);
+        const x = Math.sin(th) * Rr * (1 + 1.25 * fan), z = HC.z - Math.cos(th) * Rr * 0.95 - (0.055 + 0.03 * Math.abs(th)) * push - 0.02 * fan;
+        pts.push(new THREE.Vector3(x + Math.sin(t * 7 + jit * 9) * 0.003, ys, z)); }
+      return pts; };
+    { const cards = []; let rs = 7;
+      const R = () => (rs = (rs * 16807) % 2147483647) / 2147483647;
+      for (let layer = 0; layer < 4; layer++) { const N = 28 - layer * 3; for (let k = 0; k < N; k++) {
+        const th = -1.05 + 2.1 * (k + 0.5 + (R() - 0.5) * 0.6) / N; const len = 1.2 + R() * 0.12 - Math.abs(th) * 0.06;
+        const jit = R() - 0.5; const pts = backPath(th, layer, len, jit);
+        cards.push({ pts, seed: R(), width: 0.065 + R() * 0.025, u0: R(), du: 0.36, t0: 0, tScale: len / 1.25, out: () => new THREE.Vector3(Math.sin(th), 0, -Math.cos(th)) }); } }
+      const rest = []; const ref = backPath(0, 1, 1.25, 0); for (let i = 0; i <= 6; i++) rest.push(ref[Math.round(i / 6 * 22)].clone());
+      this.backChain = new HairChain(B.neck, rest, { k0: 190, k1: 26, damp: 4.2, clampFn: (v) => { v.z = Math.min(v.z, 0.03); } });
+      const m = new THREE.Mesh(cardGeometry(cards), hairMaterial({ U: this.hairU, chain: this.backChain, key: 'back' })); m.frustumCulled = false; B.neck.add(m); }
+    // front side locks: fall in front of the shoulders and over the chest
+    { const F0 = this.sdf; const fz = (x, y) => { let z = 0.42; while (z > -0.1 && F0(x, y, z) > 0) z -= 0.002; return z; };
+      this.lockChains = [];
+      for (const s of [-1, 1]) {
+        const lockPath = (xo, zo, len) => { const pts = []; for (let i = 0; i <= 20; i++) { const t = i / 20; const y = 0.28 - t * len; const x = s * (0.104 + xo + t * 0.035); const ay = NB.y + y;
+            const zb = ay < 2.16 ? fz(x, ay) + 0.022 : 0.03; pts.push(new THREE.Vector3(x, y, Math.max(0.03, zb) - NB.z + zo)); }
+          for (let it = 0; it < 2; it++) for (let i = 1; i < 20; i++) pts[i].z = (pts[i - 1].z + pts[i].z * 2 + pts[i + 1].z) / 4;
+          return pts; };
+        const cards = []; let rs = s > 0 ? 11 : 23; const R = () => (rs = (rs * 16807) % 2147483647) / 2147483647;
+        for (let k = 0; k < 11; k++) { const xo = (k / 10) * 0.045 - 0.006 + (R() - 0.5) * 0.006, zo = (R() - 0.3) * 0.012 + (k % 2) * 0.006, len = 0.7 + R() * 0.1 - Math.abs(k - 5) * 0.008;
+          cards.push({ pts: lockPath(xo, zo, len), seed: R(), width: 0.026 + R() * 0.01, u0: R(), du: 0.18, t0: 0, tScale: len / 0.78, out: () => new THREE.Vector3(0, 0.2, 1).normalize() }); }
+        const ref = lockPath(0.02, 0, 0.78), rest = []; for (let i = 0; i <= 6; i++) rest.push(ref[Math.round(i / 6 * 20)].clone());
+        const ch = new HairChain(B.neck, rest, { k0: 220, k1: 40, damp: 5, clampFn: (v) => { v.z = Math.max(v.z, -0.005); } }); this.lockChains.push(ch);
+        const m = new THREE.Mesh(cardGeometry(cards), hairMaterial({ U: this.hairU, chain: ch, key: 'lock' + s })); m.frustumCulled = false; B.neck.add(m);
+      } }
 
     // ---------- hat: big flat wide brim
     const hatMat = new THREE.MeshPhysicalMaterial({ color: 0xf5f4f0, roughness: 0.8, sheen: 0.5, sheenColor: new THREE.Color(0xffffff), side: THREE.DoubleSide });
@@ -339,6 +373,7 @@ export class Hachi {
     { const y = 1.97, z = frontZ(0, y); const plk = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.115, 0.003), colMat); plk.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm(0, y, z)); plk.position.copy(toChest(new THREE.Vector3(0, y, z + 0.002))); B.chest.add(plk); }
 
     shadow(this.root); this.faceMesh.castShadow = false;
+    this.root.traverse(o => { if (o.isMesh && o.material && o.material.alphaToCoverage) o.castShadow = false; });
   }
 
   setStage(n, instant = false) {
@@ -356,6 +391,15 @@ export class Hachi {
   get headWorldY() { return (2.30 + this.lift) * this.bodyScale; }
   get gy() { return this.gx; }
 
+  // ---- belly dent (player sinking in during a restraint)
+  surfacePoint(target, out, nOut) {
+    const b = this.rollMesh; b.updateWorldMatrix(true, false);
+    const pl = b.worldToLocal(_dp.copy(target)); if (pl.lengthSq() < 1e-6) pl.set(0, 0, 1); pl.normalize();
+    out.copy(pl).applyMatrix4(b.matrixWorld);
+    if (nOut) nOut.set(pl.x / (b.scale.x * b.scale.x), pl.y / (b.scale.y * b.scale.y), pl.z / (b.scale.z * b.scale.z)).transformDirection(b.matrixWorld);
+    return out;
+  }
+  setDent(target, rWorld, dWorld) { this.dentT = target ? (this.dentT || new THREE.Vector3()).copy(target) : this.dentT; this.dentR = rWorld; this.dentD = dWorld; }
   slap() { this.jigV.z -= 1.2 + Math.random() * 0.3; this.jigV.x += (Math.random() - 0.5) * 0.8; this.jigV.y += 0.5; this.rip = Math.min(1.4, this.rip + 0.8); this.rollV.z -= 0.5; }
   bump(s = 1) { this.jigV.z -= 0.6 * s; this.jigV.y -= 0.6 * s; this.rip = Math.min(1.2, this.rip + 0.5 * s); this.rollV.y -= 0.2 * s; }
 
@@ -396,7 +440,8 @@ export class Hachi {
     this.bellyU.uFloor.value = -(cy + bob * 0.5) / (R * 0.93);
     const skg = Math.max(1, R * 1.1 / 0.62);
     this.skirt.scale.set(skg, (1.48 + this.lift) / 1.48, skg * 0.9 + 0.1);
-    this.skirtU.uSkTop.value = 1.48; this.skirtU.uSkOff.value = Math.max(0, cz * 0.75) / (skg * 0.9 + 0.1);
+    this.skirtU.uSkTop.value = 1.48;
+ this.skirtU.uSkOff.value = Math.max(0, cz * 0.75) / (skg * 0.9 + 0.1);
 
     // springs: belly dome + upper roll bone
     const k = 70 / Math.sqrt(this.gx), c = 3.0;
@@ -410,6 +455,13 @@ export class Hachi {
       this.rollMesh.scale.set(0.8 * R, 0.46 * R, rz);
       this.rollU.uJig.value.set(this.rollP.x * 0.12, this.rollP.y * 0.12, this.rollP.z * 0.12).addScaledVector(this.jig, 0.04);
       this.rollU.uRip.value = this.rip * 0.5; this.rollU.uBreath.value = this.bellyU.uBreath.value; }
+    for (const [m, U] of [[this.rollMesh, this.rollU], [this.belly, this.bellyU]]) {
+      if (this.dentT && Math.abs(this.dentD || 0) > 1e-4) {
+        m.updateWorldMatrix(true, false);
+        const pl = m.worldToLocal(_dp.copy(this.dentT));
+        U.uDent.value.set(pl.x, pl.y, pl.z, this.dentR / this.bodyScale); U.uDentD.value = this.dentD / this.bodyScale; U.uDentS.value.copy(m.scale);
+      } else U.uDentD.value = 0;
+    }
     B.roll.position.set(0 + this.rollP.x * 0.02, 1.53 - 1.38 + this.rollP.y * 0.03 + this.jig.y * 0.004, 0.17 + this.rollP.z * 0.02);
 
     // arms: reference pose (fists up at shoulder height) + swing; hug pose
@@ -447,12 +499,13 @@ export class Hachi {
     B.neck.rotation.set(this.headPitch * 0.4, this.headYaw * 0.35, 0, 'YXZ');
     B.head.rotation.set(this.headPitch * 0.6, this.headYaw * 0.65, Math.sin(t * 0.9) * 0.03 + (stun ? Math.sin(t * 9) * 0.08 : 0), 'YXZ');
 
-    // hair inertia
-    const target = new THREE.Vector3(Math.sin(ph) * 0.02 * walkAmt - this.headYaw * 0.03, 0, -0.05 * walkAmt - 0.01 + this.headPitch * 0.03);
-    this.swayV.addScaledVector(target.sub(this.sway), 40 * dt).multiplyScalar(Math.exp(-5 * dt)); this.sway.addScaledVector(this.swayV, dt);
-    this.hairU.uSway.value.copy(this.sway);
+    // hair: spring chains (inertia from walking/turning + belly bounce)
+    { const yaw = this.root.rotation.y, j = this.jigV; const imp = _hv.set(j.x * Math.cos(yaw) + j.z * Math.sin(yaw), j.y, -j.x * Math.sin(yaw) + j.z * Math.cos(yaw)).multiplyScalar(0.35 * this.bodyScale);
+      this.backChain.update(dt, imp); for (const c of this.lockChains) c.update(dt, imp); }
 
     this.face.talk = o.talk || 0; this.face.update(dt);
   }
 }
-const _v = new THREE.Vector3();
+const ssr = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+const _dp = new THREE.Vector3();
+const _v = new THREE.Vector3(), _hv = new THREE.Vector3();
