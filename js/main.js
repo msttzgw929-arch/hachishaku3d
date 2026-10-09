@@ -6,6 +6,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { World, ROADS } from './world.js';
 import { Hachi } from './hachi.js';
 import { Audio } from './audio.js';
+import { Minimap } from './minimap.js';
 
 const $ = (id) => document.getElementById(id);
 const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
@@ -90,8 +91,9 @@ window.__game = { S, hachi, world, audio, camera, renderer, scene, get info() { 
 // ---------------- input
 const keys = {};
 // speeds (m/s). Player is always clearly faster in the open; she wins only by cornering / lunging up close.
-const PLAYER_SPEED = 7.5;
-const HACHI_MAX = PLAYER_SPEED * 0.68; // hard cap on her speed in every state (lunge included) = 5.1 m/s
+const PLAYER_SPEED = 11.5;
+const HACHI_MAX = PLAYER_SPEED * 0.45; // hard cap on how fast ANY part of her (root or belly surface) moves, lunge included = 5.2 m/s
+const GRAB_TOUCH = 0.22; // grab only when the player's body actually touches the belly surface (player radius 0.32)
 let mouseDX = 0, mouseDY = 0;
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
@@ -118,7 +120,7 @@ let stickUI = isTouch;
 function setStickUI(on) { stickUI = on; document.body.classList.toggle('sticks', on); if (S.mode === 'play') $('touch').classList.toggle('hidden', !on); if (on && document.pointerLockElement) { S.ignoreUnlock = true; document.exitPointerLock(); } }
 if (isTouch) document.body.classList.add('sticks');
 addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !isTouch && (S.mode === 'play' || S.mode === 'title')) setStickUI(!stickUI); });
-const STICK_R = 58, DZ = 0.12;
+const STICK_R = 58, DZ = 0.1, FULL = 0.4; // full speed once pushed past 40% of the radius
 const sticks = { L: { el: null, id: null, ox: 0, oy: 0, x: 0, y: 0 }, R: { el: null, id: null, ox: 0, oy: 0, x: 0, y: 0 } };
 const lookVel = { x: 0, y: 0 };
 function stickEls() { if (!sticks.L.el) { sticks.L.el = $('stickL'); sticks.R.el = $('stickR'); } }
@@ -129,14 +131,15 @@ function stickDown(st, e) {
 function stickMove(st, e) {
   let dx = e.clientX - st.ox, dy = e.clientY - st.oy; const l = Math.hypot(dx, dy); if (l > STICK_R) { dx *= STICK_R / l; dy *= STICK_R / l; }
   st.el.firstElementChild.style.transform = `translate(${dx}px,${dy}px)`;
-  const m = Math.min(1, l / STICK_R); const k = m < DZ ? 0 : (m - DZ) / (1 - DZ); const n = l > 0 ? 1 / Math.max(l, 1e-6) : 0;
+  const m = Math.min(1, l / STICK_R), n = l > 0 ? 1 / Math.max(l, 1e-6) : 0;
+  const k = st === sticks.L ? Math.min(1, Math.max(0, (m - DZ) / (FULL - DZ))) : (m < DZ ? 0 : (m - DZ) / (1 - DZ)); // move: full at 40%; look: analog
   st.x = dx * n * k; st.y = dy * n * k;
 }
 function stickUp(st) { stickEls(); st.id = null; st.x = st.y = 0; const el = st.el; el.classList.remove('active'); el.firstElementChild.style.transform = ''; el.style.left = el.style.top = el.style.right = el.style.bottom = ''; }
 function resetSticks() { for (const k of ['L', 'R']) if (sticks[k].el || $('stickL')) stickUp(sticks[k]); }
 document.body.addEventListener('pointerdown', (e) => {
   if (e.pointerType === 'mouse' && !stickUI) return;
-  if (e.target.closest('button') || e.target.closest('.panel') || e.target.closest('.screen')) return;
+  if (e.target.closest('button') || e.target.closest('.panel') || e.target.closest('.screen') || e.target.closest('#minimap') || e.target.closest('#fullmap')) return;
   if (S.mode === 'grab') { if (e.pointerType !== 'mouse') slap(); return; }
   if (S.mode !== 'play') return;
   const st = e.clientX < innerWidth * 0.45 ? sticks.L : sticks.R;
@@ -147,6 +150,12 @@ document.body.addEventListener('pointermove', (e) => { for (const k of ['L', 'R'
 const pEnd = (e) => { for (const k of ['L', 'R']) if (sticks[k].id === e.pointerId) stickUp(sticks[k]); };
 document.body.addEventListener('pointerup', pEnd); document.body.addEventListener('pointercancel', pEnd);
 $('pause-btn').addEventListener('click', () => { if (S.mode === 'play') pause(); });
+// ---- map: minimap (tap) / M key -> full-screen map; the game is frozen while the full map is open
+let mapOpen = false, minimap = null;
+function setMap(on) { if (on && S.mode !== 'play') return; mapOpen = on; $('fullmap').classList.toggle('hidden', !on); if (on) { resetSticks(); for (const k in keys) keys[k] = false; if (document.pointerLockElement) { S.ignoreUnlock = true; document.exitPointerLock(); } } else lockPointer(); }
+$('minimap').addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); setMap(true); });
+$('fullmap').addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); setMap(false); });
+addEventListener('keydown', (e) => { if (e.code === 'KeyM') setMap(!mapOpen); });
 
 // ---------------- UI
 $('start-btn').onclick = () => startGame();
@@ -251,7 +260,7 @@ function escapeGrab() {
 // ---------------- irritation / growth
 function stageUp() {
   S.stage++; S.maxStage = Math.max(S.maxStage, S.stage); S.irritation = 0;
-  S.invuln = Math.max(S.invuln, 1.5); // the belly's growth surge can't grab you
+  S.invuln = Math.max(S.invuln, 2.2); // the belly's growth surge can't grab you
   hachi.setStage(S.stage); audio.grow(); S.shake = 0.6;
   audio.say('irritate', headPos(), true); setExpr(S.stage >= 3 ? 'furious' : 'angry', 3.2);
   const msg = S.stage === 1 ? 'お腹がふくらんだ！' : S.stage < 4 ? 'お腹がさらに巨大化！' : 'お腹がとまらない！！';
@@ -281,14 +290,28 @@ function updatePlayer(dt) {
   const speed = PLAYER_SPEED; // fast by default (no sprint / stamina)
   const sin = Math.sin(S.yaw), cos = Math.cos(S.yaw);
   const tx = (mx * cos + mz * sin) * speed, tz = (-mx * sin + mz * cos) * speed;
-  const k = 1 - Math.exp(-dt * 12);
+  const k = 1 - Math.exp(-dt * 40); // near-instant: full speed in ~0.1 s
   S.vel.x += (tx - S.vel.x) * k; S.vel.z += (tz - S.vel.z) * k;
-  S.pos.addScaledVector(S.vel, dt).addScaledVector(S.knock, dt);
+  // move in small sub-steps with wall sliding: the into-wall part of the motion is redirected along the wall instead of being lost
+  const sub = Math.max(1, Math.ceil(Math.hypot(S.vel.x, S.vel.z) * dt / 0.25));
+  for (let i = 0; i < sub; i++) {
+    const px = S.pos.x, pz = S.pos.z;
+    S.pos.x += (S.vel.x + S.knock.x) * dt / sub; S.pos.z += (S.vel.z + S.knock.z) * dt / sub;
+    world.collide(S.pos, 0.32); world.collideProps(S.pos, 0.32);
+    const cx = S.pos.x - (px + (S.vel.x + S.knock.x) * dt / sub), cz = S.pos.z - (pz + (S.vel.z + S.knock.z) * dt / sub), cl = Math.hypot(cx, cz);
+    if (cl > 1e-5) { // pushed by a wall: slide along it at (nearly) full speed
+      const nx = cx / cl, nz = cz / cl, vn = S.vel.x * nx + S.vel.z * nz;
+      if (vn < 0) {
+        const want = Math.hypot(S.vel.x, S.vel.z); let sx = S.vel.x - vn * nx, sz = S.vel.z - vn * nz; const sl = Math.hypot(sx, sz);
+        if (sl > want * 0.25) { const f = want * 0.92 / sl; sx *= f; sz *= f; } // keep ~full speed along the wall unless running straight into it
+        S.pos.x = px + sx * dt / sub; S.pos.z = pz + sz * dt / sub; world.collide(S.pos, 0.32); world.collideProps(S.pos, 0.32);
+      }
+    }
+  }
   S.knock.multiplyScalar(Math.exp(-dt * 4));
-  world.collide(S.pos, 0.32); world.collideProps(S.pos, 0.32);
   const sp = Math.hypot(S.vel.x, S.vel.z);
-  S.bob += sp * dt * (2 / 1.9); // one bob cycle per 1.9 m stride (~3.9 steps/s at full speed)
-  S.stepAcc += sp * dt; if (S.stepAcc > 1.9) { S.stepAcc = 0; audio.playerStep(sp > 5); }
+  S.bob += sp * dt * (2 / 2.9); // one bob cycle per 2.9 m stride (~4 steps/s at full speed)
+  S.stepAcc += sp * dt; if (S.stepAcc > 2.9) { S.stepAcc = 0; audio.playerStep(sp > 7); }
   S.invuln = Math.max(0, S.invuln - dt);
 }
 
@@ -335,10 +358,13 @@ function updateHachi(dt) {
   if (want && want.lengthSq() > 0.01) {
     want.normalize();
     const ty = Math.atan2(want.x, want.z); let d = ty - h.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
-    h.yaw += d * (1 - Math.exp(-dt * 5));
+    // turning swings her big belly sideways: limit the turn rate so the belly front never moves faster than the cap
+    const reach = Math.max(0.8, hachi.radius + (hachi.R - 0.17) * hachi.bodyScale);
+    const wMax = Math.max(0.5, HACHI_MAX * 0.5 / reach);
+    let dy = d * (1 - Math.exp(-dt * 5)); dy = Math.max(-wMax * dt, Math.min(wMax * dt, dy)); h.yaw += dy;
     const align = Math.max(0.3, Math.cos(d));
     h.speed += (speed * align - h.speed) * (1 - Math.exp(-dt * 4));
-    h.speed = Math.min(h.speed, HACHI_MAX);
+    h.speed = Math.max(0, Math.min(h.speed, HACHI_MAX - Math.abs(dy / dt) * reach)); // root speed + belly swing <= cap
     h.pos.x += Math.sin(h.yaw) * h.speed * dt; h.pos.z += Math.cos(h.yaw) * h.speed * dt;
   } else h.speed *= Math.exp(-dt * 5);
   hachi.root.rotation.y = h.yaw;
@@ -359,7 +385,7 @@ function updateHachi(dt) {
     if (Math.hypot(p.x - bc.x, p.z - bc.z) < rr || Math.hypot(p.x - h.pos.x, p.z - h.pos.z) < 0.6 * hachi.bodyScale) { world.knock(p, h.pos, 0.5 + S.stage * 0.2); audio.thud(tmp2.set(p.x, 1, p.z)); hachi.bump(0.4); }
   }
   // catch
-  if (S.mode === 'play' && S.invuln <= 0 && h.stun <= 0 && bdist < 0.5) startGrab();
+  if (S.mode === 'play' && S.invuln <= 0 && h.stun <= 0 && bdist < GRAB_TOUCH) startGrab();
   // irritation
   if (S.mode === 'play') {
     S.irritation += dt * (2.7 + (dist > 16 ? 1.6 : 0) + (!los ? 1.0 : 0) + Math.min(2, S.stage * 0.25));
@@ -464,7 +490,14 @@ function frame() {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, clock.getDelta());
   if (window.__fixedDt) dt = window.__fixedDt;
-  for (let i = 0; i < (window.__simSteps || 1); i++) tick(dt);
+  if (!minimap) minimap = new Minimap(world, $('minimap'), $('fullmap-cv'));
+  if (mapOpen && S.mode !== 'play') setMap(false);
+  if (!mapOpen) for (let i = 0; i < (window.__simSteps || 1); i++) tick(dt);
+  if (S.mode === 'play' || S.mode === 'grab' || S.mode === 'pause') {
+    const pl = { x: S.pos.x, z: S.pos.z, yaw: S.yaw }, her = { x: hachi.root.position.x, z: hachi.root.position.z, r: hachi.radius };
+    hachi.bellyCenter(bc); her.x = bc.x; her.z = bc.z;
+    if (mapOpen) minimap.drawFull(dt, pl, her); else minimap.draw(dt, pl, her);
+  }
   if (window.__topdown) { // debug: whole-map overview
     camera.position.set(0, 300, 0.01); camera.up.set(0, 0, -1); camera.lookAt(0, 0, 0); camera.fov = 52; camera.updateProjectionMatrix();
     scene.fog.density = 0.0006; world.cull(camera.position, 1e4); renderer.toneMappingExposure = window.__topdown;
@@ -540,4 +573,4 @@ $('start-btn').disabled = false;
 frame();
 window.__ready = true;
 // expose helpers for automated tests
-Object.assign(window.__game, { setStickUI, startGame, startGrab, slap, stageUp, smashBuilding, gameOver, toTitle, setExpr });
+Object.assign(window.__game, { setMap, setStickUI, startGame, startGrab, slap, stageUp, smashBuilding, gameOver, toTitle, setExpr });

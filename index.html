@@ -27,7 +27,9 @@
   <div id="announce"></div>
   <div id="dist"></div>
   <button id="pause-btn" class="touch-only" aria-label="一時停止">❚❚</button>
+  <canvas id="minimap" width="300" height="300" aria-label="地図（タップで全体マップ）"></canvas>
 </div>
+<div id="fullmap" class="hidden"><canvas id="fullmap-cv"></canvas><div class="fm-title">地図</div><div class="fm-hint"><span class="pc-only">M キー／クリック</span><span class="touch-only">タップ</span>で閉じる　<b class="me">▲</b> あなた　<b class="her">●</b> 八尺様　<b class="ruin">■</b> こわれた建物</div></div>
 <div id="subtitle" class="hidden"><span class="who">八尺様</span><span id="subtext"></span></div>
 
 <!-- restraint -->
@@ -78,6 +80,7 @@
       <tr><td>お腹をたたく</td><td>クリック／スペース連打</td><td>タップ連打</td></tr>
       <tr><td>一時停止</td><td>Esc</td><td>❚❚ ボタン</td></tr>
       <tr><td>スティック表示</td><td>T キーで切替</td><td>常に表示</td></tr>
+      <tr><td>地図</td><td>M キー</td><td>左上の地図をタップ</td></tr>
     </table>
     <button id="howto-close" class="big-btn">わかった！</button>
   </div>
