@@ -90,7 +90,8 @@ window.__game = { S, hachi, world, audio, camera, renderer, scene, get info() { 
 // ---------------- input
 const keys = {};
 // speeds (m/s). Player is always clearly faster in the open; she wins only by cornering / lunging up close.
-const PLAYER_SPEED = 6.0;
+const PLAYER_SPEED = 7.5;
+const HACHI_MAX = PLAYER_SPEED * 0.68; // hard cap on her speed in every state (lunge included) = 5.1 m/s
 let mouseDX = 0, mouseDY = 0;
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
@@ -250,6 +251,7 @@ function escapeGrab() {
 // ---------------- irritation / growth
 function stageUp() {
   S.stage++; S.maxStage = Math.max(S.maxStage, S.stage); S.irritation = 0;
+  S.invuln = Math.max(S.invuln, 1.5); // the belly's growth surge can't grab you
   hachi.setStage(S.stage); audio.grow(); S.shake = 0.6;
   audio.say('irritate', headPos(), true); setExpr(S.stage >= 3 ? 'furious' : 'angry', 3.2);
   const msg = S.stage === 1 ? 'お腹がふくらんだ！' : S.stage < 4 ? 'お腹がさらに巨大化！' : 'お腹がとまらない！！';
@@ -285,8 +287,8 @@ function updatePlayer(dt) {
   S.knock.multiplyScalar(Math.exp(-dt * 4));
   world.collide(S.pos, 0.32); world.collideProps(S.pos, 0.32);
   const sp = Math.hypot(S.vel.x, S.vel.z);
-  S.bob += sp * dt * 1.55; // ~2.3 steps/s at full speed
-  S.stepAcc += sp * dt; if (S.stepAcc > 1.3) { S.stepAcc = 0; audio.playerStep(sp > 4); }
+  S.bob += sp * dt * (2 / 1.9); // one bob cycle per 1.9 m stride (~3.9 steps/s at full speed)
+  S.stepAcc += sp * dt; if (S.stepAcc > 1.9) { S.stepAcc = 0; audio.playerStep(sp > 5); }
   S.invuln = Math.max(0, S.invuln - dt);
 }
 
@@ -325,9 +327,10 @@ function updateHachi(dt) {
     }
     speed = hachiTargetSpeed();
     h.lungeCd -= dt;
-    if (h.lunge > 0) { h.lunge -= dt; speed *= 1.7; } // short burst, still below PLAYER_SPEED
+    if (h.lunge > 0) { h.lunge -= dt; speed *= 1.6; } // short burst
     else if (dist < 6 && h.lungeCd <= 0 && los) { h.lunge = 0.75; h.lungeCd = 5 + Math.random() * 3; }
     if (S.invuln > 0 && bdist < 3) speed *= 0.3;
+    speed = Math.min(speed, HACHI_MAX);
   }
   if (want && want.lengthSq() > 0.01) {
     want.normalize();
@@ -335,6 +338,7 @@ function updateHachi(dt) {
     h.yaw += d * (1 - Math.exp(-dt * 5));
     const align = Math.max(0.3, Math.cos(d));
     h.speed += (speed * align - h.speed) * (1 - Math.exp(-dt * 4));
+    h.speed = Math.min(h.speed, HACHI_MAX);
     h.pos.x += Math.sin(h.yaw) * h.speed * dt; h.pos.z += Math.cos(h.yaw) * h.speed * dt;
   } else h.speed *= Math.exp(-dt * 5);
   hachi.root.rotation.y = h.yaw;
