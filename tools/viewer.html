@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;background:#000}</style>
+<script type="importmap">{"imports":{"three":"../vendor/three/three.module.js","three/addons/":"../vendor/three/addons/"}}</script></head><body>
+<script type="module">
+import * as THREE from 'three';
+import { Hachi } from '../js/hachi.js';
+const r = new THREE.WebGLRenderer({antialias:true}); r.setSize(innerWidth, innerHeight); document.body.appendChild(r.domElement);
+r.toneMapping = THREE.ACESFilmicToneMapping; r.shadowMap.enabled = true;
+const s = new THREE.Scene(); s.background = new THREE.Color(0x151a2a);
+s.add(new THREE.HemisphereLight(0x9aa8d0, 0x302830, 1.2));
+const d = new THREE.DirectionalLight(0xfff0e0, 2.2); d.position.set(2, 5, 4); d.castShadow = true; s.add(d);
+const p = new THREE.PointLight(0x66ccff, 4, 8); p.position.set(-2, 2, 2); s.add(p);
+const g = new THREE.Mesh(new THREE.PlaneGeometry(20,20), new THREE.MeshStandardMaterial({color:0x333333})); g.rotation.x=-Math.PI/2; g.receiveShadow=true; s.add(g);
+const h = new Hachi(); s.add(h.root);
+const q = new URLSearchParams(location.search);
+const stage = +(q.get('stage')||0); h.setStage(stage, true);
+h.face.set(q.get('expr')||'smug');
+const cam = new THREE.PerspectiveCamera(+(q.get('fov')||45), innerWidth/innerHeight, 0.05, 100);
+const view = q.get('view')||'front';
+const cy = +(q.get('cy')||1.0), dist=+(q.get('d')||4.5), ang=+(q.get('a')||0), ly=+(q.get('ly')||1.6);
+cam.position.set(Math.sin(ang)*dist, cy, Math.cos(ang)*dist); cam.lookAt(0, ly, 0);
+const speed = +(q.get('speed')||0);
+let t=0; for (let i=0;i<+(q.get('frames')||60);i++){ h.update(1/60,{speed, look:cam.position, mode:q.get('mode')||'walk', talk:+(q.get('talk')||0)}); }
+r.render(s, cam); window.done = true;
+</script></body></html>

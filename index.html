@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>八尺様から逃げろ！3D</title>
+<meta name="description" content="お腹が大きすぎる八尺様から夜の町を逃げ回る、一人称3D鬼ごっこホラーコメディ。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👒</text></svg>">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">{"imports":{"three":"./vendor/three/three.module.js","three/addons/":"./vendor/three/addons/"}}</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="vignette"></div>
+<div id="flash"></div>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div id="hud-left">
+    <div id="time">0:00.0</div>
+    <div id="hearts">♥♥♥</div>
+  </div>
+  <div id="hud-right">
+    <div class="lbl">八尺様のイライラ <span id="lv">Lv.0</span></div>
+    <div class="bar"><div id="irr"></div></div>
+  </div>
+  <div id="stamina-wrap"><div class="lbl">スタミナ</div><div class="bar small"><div id="stamina"></div></div></div>
+  <div id="announce"></div>
+  <div id="dist"></div>
+  <button id="pause-btn" class="touch-only" aria-label="一時停止">❚❚</button>
+</div>
+<div id="subtitle" class="hidden"><span class="who">八尺様</span><span id="subtext"></span></div>
+
+<!-- restraint -->
+<div id="grab" class="hidden">
+  <div id="grab-title">つかまった！</div>
+  <div id="grab-hint"><span class="pc-only">クリック／スペース</span><span class="touch-only">画面タップ</span>を連打してお腹をたたけ！</div>
+  <div class="bar big"><div id="grab-bar"></div></div>
+  <div id="grab-count"></div>
+  <div class="bar timer"><div id="grab-timer"></div></div>
+</div>
+
+<!-- touch controls -->
+<div id="touch" class="hidden">
+  <div id="stick-base"><div id="stick-knob"></div></div>
+  <button id="sprint-btn">ダッシュ</button>
+</div>
+
+<!-- screens -->
+<div id="title" class="screen">
+  <div class="title-wrap">
+    <div class="sub">― 夜の路地裏・鬼ごっこ ―</div>
+    <h1>八尺様から<br>逃げろ！<span>3D</span></h1>
+    <div class="catch">「ぽぽぽ…みーつけた♪」</div>
+    <div id="loading">読み込み中…</div>
+    <div class="buttons">
+      <button id="start-btn" class="big-btn" disabled>はじめる</button>
+      <button id="howto-btn" class="sub-btn">あそびかた</button>
+    </div>
+    <div id="best"></div>
+    <div class="note">🎧 イヤホン推奨（ボイスあり）</div>
+  </div>
+</div>
+
+<div id="howto" class="screen hidden">
+  <div class="panel">
+    <h2>あそびかた</h2>
+    <ul>
+      <li>お腹が大きすぎる<b>八尺様</b>から、夜の町を逃げ回ろう！ 生き延びた時間がスコアです。</li>
+      <li>近づかれると<b>捕まって</b>しまいます。捕まったら<b>お腹を連打</b>して脱出！（簡単です）</li>
+      <li>逃げ続けると八尺様は<b>イライラ</b>して、お腹がどんどん<b>巨大化</b>。巨大なお腹は建物も壊してしまいます。そのかわり、少しだけ足が遅くなります。</li>
+      <li>ハートは3つ。捕まるたびに1つ減り、<b>0になったらゲームオーバー</b>。</li>
+    </ul>
+    <table>
+      <tr><th></th><th>PC</th><th>スマホ</th></tr>
+      <tr><td>移動</td><td>WASD／矢印キー</td><td>左側をドラッグ</td></tr>
+      <tr><td>視点</td><td>マウス</td><td>右側をドラッグ</td></tr>
+      <tr><td>ダッシュ</td><td>Shift</td><td>ダッシュボタン</td></tr>
+      <tr><td>お腹をたたく</td><td>クリック／スペース連打</td><td>タップ連打</td></tr>
+      <tr><td>一時停止</td><td>Esc</td><td>❚❚ ボタン</td></tr>
+    </table>
+    <button id="howto-close" class="big-btn">わかった！</button>
+  </div>
+</div>
+
+<div id="pause" class="screen hidden">
+  <div class="panel center">
+    <h2>一時停止中</h2>
+    <button id="resume-btn" class="big-btn">つづける</button>
+    <button id="quit-btn" class="sub-btn">タイトルへ</button>
+  </div>
+</div>
+
+<div id="over" class="screen hidden">
+  <div class="panel center">
+    <h2 class="over-title">つかまっちゃった…</h2>
+    <div class="over-line">「うふふ……これで、ずぅっとお姉さんと一緒ね♡」</div>
+    <div class="score">生存時間 <b id="score-time">0:00.0</b></div>
+    <div class="score2">イライラ最大 <b id="score-lv">Lv.0</b> ／ 壊した建物 <b id="score-bld">0</b> 棟 ／ 脱出 <b id="score-esc">0</b> 回</div>
+    <div id="score-best"></div>
+    <button id="retry-btn" class="big-btn">もう一回にげる</button>
+    <button id="title-btn" class="sub-btn">タイトルへ</button>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
