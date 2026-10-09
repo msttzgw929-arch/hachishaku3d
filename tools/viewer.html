@@ -10,8 +10,9 @@ s.add(new THREE.HemisphereLight(0x9aa8d0, 0x302830, 1.2));
 const d = new THREE.DirectionalLight(0xfff0e0, 2.2); d.position.set(2, 5, 4); d.castShadow = true; s.add(d);
 const p = new THREE.PointLight(0x66ccff, 4, 8); p.position.set(-2, 2, 2); s.add(p);
 const g = new THREE.Mesh(new THREE.PlaneGeometry(20,20), new THREE.MeshStandardMaterial({color:0x333333})); g.rotation.x=-Math.PI/2; g.receiveShadow=true; s.add(g);
-const h = new Hachi(); s.add(h.root);
 const q = new URLSearchParams(location.search);
+if (q.get('bright')) { s.add(new THREE.HemisphereLight(0xe0e6ff, 0x404048, 0.5)); const f = new THREE.DirectionalLight(0xfff4ea, 0.9); f.position.set(-3, 4, 3); s.add(f); }
+const h = new Hachi(); s.add(h.root);
 const stage = +(q.get('stage')||0); h.setStage(stage, true);
 h.face.set(q.get('expr')||'smug');
 const cam = new THREE.PerspectiveCamera(+(q.get('fov')||45), innerWidth/innerHeight, 0.05, 100);

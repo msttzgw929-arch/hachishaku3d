@@ -1,36 +1,67 @@
-// Procedurally modelled Hachishaku-sama with a huge jiggly belly.
+// Hachishaku-sama: SDF-sculpted skinned body (surface nets), jiggly belly dome, procedural knit shading.
 import * as THREE from 'three';
-import { makeKnit, makeHair } from './textures.js';
+import { makeHair } from './textures.js';
 import { Face } from './face.js';
+import { sdEllipsoid, sdRoundCone, smin, surfaceNets } from './sdf.js';
 
-const KNIT = makeKnit();
 const HAIRTEX = makeHair();
+const KNIT_COL = 0xf4f2ef, SKIN_COL = new THREE.Color(0xf6e4de);
 
-function knitMat(rx, ry, extra = {}) {
-  const map = KNIT.map.clone(); map.repeat.set(rx, ry); map.needsUpdate = true;
-  const nmap = KNIT.nmap.clone(); nmap.repeat.set(rx, ry); nmap.needsUpdate = true;
-  return new THREE.MeshStandardMaterial({ color: 0xf3f1ee, map, normalMap: nmap, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.82, metalness: 0, ...extra });
-}
-
-// injects soft-body deformation into a standard material
-function addJiggle(mat, U, key) {
-  mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, U);
-    sh.vertexShader = 'uniform vec3 uJig; uniform float uRip; uniform float uFloor; uniform float uTime; uniform float uBreath;\n' +
-      sh.vertexShader.replace('#include <begin_vertex>', `
-      vec3 transformed = vec3(position);
+// ---------- procedural rib knit (fine vertical ribs, fades with distance, sheen + wrap-ish light)
+function knitMaterial({ ribs = 110, amp = 0.55, mode = 'radial', extra = {}, jiggle = null, skirt = null, key = 'k' }) {
+  const m = new THREE.MeshPhysicalMaterial({ color: KNIT_COL, roughness: 0.78, metalness: 0, sheen: 0.7, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xffffff), vertexColors: mode === 'body', ...extra });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uRibN = { value: ribs }; sh.uniforms.uRibAmp = { value: amp };
+    if (jiggle) Object.assign(sh.uniforms, jiggle);
+    if (skirt) Object.assign(sh.uniforms, skirt);
+    let vs = sh.vertexShader, fs = sh.fragmentShader;
+    const body = mode === 'body';
+    vs = (body ? 'attribute float armW; attribute float armPh; attribute vec3 ribTan; attribute float cloth;\n' : '') +
+      'varying vec3 vRest; varying vec3 vTanV; varying float vArmW; varying float vArmPh; varying float vCloth;\n' +
+      (jiggle ? 'uniform vec3 uJig; uniform float uRip; uniform float uFloor; uniform float uTime; uniform float uBreath;\n' : '') +
+      (skirt ? 'uniform vec2 uLegL; uniform vec2 uLegR; uniform float uTime; uniform float uSkTop; uniform float uSkOff;\n' : '') + vs;
+    let tanExpr = body ? 'mix(normalize(vec3(position.z, 0.0, -position.x) + 1e-5), ribTan, armW)' : 'normalize(vec3(position.z, 0.0, -position.x) + 1e-5)';
+    vs = vs.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vRest = position; vArmW = ${body ? 'armW' : '0.0'}; vArmPh = ${body ? 'armPh' : '0.0'}; vCloth = ${body ? 'cloth' : '1.0'};
+      ${jiggle ? `
       float w = smoothstep(-0.7, 1.0, position.z) * (0.5 + 0.5 * smoothstep(0.7, -0.9, position.y));
       transformed += uJig * w;
       transformed.xz *= 1.0 - uJig.y * 0.6 * w + uBreath * w;
       transformed.y *= 1.0 + uBreath * 0.5 * w;
       float rd = length(position.xy - vec2(0.0, -0.05));
-      transformed += normal * uRip * sin(rd * 13.0 - uTime * 26.0) * exp(-rd * 1.2) * w * 0.035;
-      float fl = uFloor + 0.06;
-      if (transformed.y < fl) { float t = fl - transformed.y; transformed.y = fl - t * 0.18; transformed.xz *= 1.0 + t * 0.35; }
-      `);
+      transformed += normal * uRip * sin(rd * 13.0 - uTime * 26.0) * exp(-rd * 1.2) * w * 0.03;
+      float fl = uFloor + 0.05;
+      if (transformed.y < fl) { float t = fl - transformed.y; transformed.y = fl - t * 0.2; transformed.xz *= 1.0 + t * 0.3; }` : ''}
+      ${skirt ? `
+      float hf = clamp(1.0 - position.y / uSkTop, 0.0, 1.0); hf = pow(hf, 1.6);
+      float r = max(length(position.xz), 0.001);
+      float wl = smoothstep(0.1, -0.7, position.x / r), wr = smoothstep(-0.1, 0.7, position.x / r);
+      float front = 0.6 + 0.4 * (position.z / r);
+      transformed.z += (uLegL.x * wl + uLegR.x * wr) * hf * 0.8 * front;
+      transformed.y += (uLegL.y * wl + uLegR.y * wr) * hf * 0.2;
+      transformed.xz *= 1.0 + sin(uTime * 2.0 + atan(position.x, position.z) * 5.0) * 0.01 * hf;
+      transformed.z += uSkOff * clamp(1.0 - position.y / uSkTop, 0.0, 1.0);` : ''}
+    `);
+    // tangent through skinning
+    const tanCode = `vec3 tanO = ${tanExpr};\n#ifdef USE_SKINNING\n tanO = (skinMatrix * vec4(tanO, 0.0)).xyz;\n#endif\n vTanV = normalize(normalMatrix * tanO);`;
+    vs = vs.replace('#include <defaultnormal_vertex>', '#include <defaultnormal_vertex>\n' + tanCode);
+    fs = 'uniform float uRibN; uniform float uRibAmp; varying vec3 vRest; varying vec3 vTanV; varying float vArmW; varying float vArmPh; varying float vCloth;\n' + fs;
+    fs = fs.replace('#include <color_fragment>', `#include <color_fragment>
+      float ph = mix(atan(vRest.x, vRest.z) * uRibN, vArmPh, vArmW);
+      float fw = fwidth(ph);
+      float ribK = clamp(1.4 - fw * 0.5, 0.0, 1.0) * vCloth;
+      float rib = sin(ph);
+      diffuseColor.rgb *= 1.0 - 0.09 * ribK * (0.5 - 0.5 * rib);
+      diffuseColor.rgb *= 1.0 - 0.04 * ribK * (0.5 + 0.5 * sin(vRest.y * 260.0 + rib));`);
+    fs = fs.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+      normal = normalize(normal + vTanV * cos(ph) * uRibAmp * ribK);`);
+    // soft wrap lighting (cheap subsurface feel)
+    fs = fs.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * 0.06;`);
+    sh.vertexShader = vs; sh.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => key;
-  return mat;
+  m.customProgramCacheKey = () => 'knit_' + key;
+  return m;
 }
 function addSway(mat, U, top, len, key) {
   mat.onBeforeCompile = (sh) => {
@@ -39,297 +70,388 @@ function addSway(mat, U, top, len, key) {
       vec3 transformed = vec3(position);
       float f = clamp((${top.toFixed(3)} - position.y) / ${len.toFixed(3)}, 0.0, 1.0); f = f * f;
       transformed += uSway * f;
-      transformed.x += sin(uTime * 1.7 + position.y * 6.0) * 0.006 * f;
-      `);
+      transformed.x += sin(uTime * 1.7 + position.y * 6.0) * 0.005 * f;`);
   };
-  mat.customProgramCacheKey = () => key;
-  return mat;
+  mat.customProgramCacheKey = () => key; return mat;
 }
-function addSkirt(mat, U) {
-  mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, { uLegL: U.uLegL, uLegR: U.uLegR, uTime: U.uTime, uSkTop: U.uSkTop });
-    sh.vertexShader = 'uniform vec2 uLegL; uniform vec2 uLegR; uniform float uTime; uniform float uSkTop;\n' + sh.vertexShader.replace('#include <begin_vertex>', `
-      vec3 transformed = vec3(position);
-      float hf = clamp(1.0 - position.y / uSkTop, 0.0, 1.0); hf = pow(hf, 1.6);
-      float r = max(length(position.xz), 0.001);
-      float wl = smoothstep(0.1, -0.7, position.x / r), wr = smoothstep(-0.1, 0.7, position.x / r);
-      float front = 0.6 + 0.4 * (position.z / r);
-      transformed.z += (uLegL.x * wl + uLegR.x * wr) * hf * 0.85 * front;
-      transformed.y += (uLegL.y * wl + uLegR.y * wr) * hf * 0.25;
-      transformed.xz *= 1.0 + sin(uTime * 2.0 + atan(position.x, position.z) * 5.0) * 0.012 * hf;
-      `);
-  };
-  mat.customProgramCacheKey = () => 'skirt';
-  return mat;
-}
+function lathe(pts, seg = 64) { return new THREE.LatheGeometry(pts.map(p => new THREE.Vector2(p[0], p[1])), seg); }
 
-function lathe(pts, seg = 48) { return new THREE.LatheGeometry(pts.map(p => new THREE.Vector2(p[0], p[1])), seg); }
+// ---------------- rest-pose skeleton description (body local units, feet at y=0)
+const SH_Y = 2.06, SH_X = 0.245;
+const ARM_U = [Math.sin(0.62), -Math.cos(0.62), 0];   // rest: upper arm down-out
+const ARM_F = [Math.sin(1.42), -Math.cos(1.42), 0];   // rest: forearm almost horizontal (keeps it clear of the body)
+const UA = 0.3, FA = 0.27;
+function armPts(s) {
+  const sh = [s * SH_X, SH_Y, -0.01];
+  const dU = [ARM_U[0] * s, ARM_U[1], 0], dF = [ARM_F[0] * s, ARM_F[1], 0];
+  const el = [sh[0] + dU[0] * UA, sh[1] + dU[1] * UA, sh[2]];
+  const wr = [el[0] + dF[0] * FA, el[1] + dF[1] * FA, el[2]];
+  const fi = [wr[0] + dF[0] * 0.055, wr[1] + dF[1] * 0.055, wr[2] + 0.005];
+  return { sh, el, wr, fi, dU, dF, d: dF };
+}
+const ARMS = { L: armPts(1), R: armPts(-1) };
+
+// primitives: [name, bone, cloth(1)/skin(0), fn]
+function bodyPrims() {
+  const P = [];
+  const zf = 1.32; // torso is flatter front-to-back
+  P.push(['hips', 'hips', 1, (x, y, z) => sdEllipsoid(x, y, z, 0, 1.12, -0.01, 0.235, 0.24, 0.18)]);
+  P.push(['waist', 'spine', 1, (x, y, z) => sdRoundCone(x, y, z * zf, [0, 1.2, 0], [0, 1.72, -0.02], 0.19, 0.175)]);
+  P.push(['ribcage', 'chest', 1, (x, y, z) => sdRoundCone(x, y, z * zf, [0, 1.7, -0.02], [0, 1.98, -0.03], 0.18, 0.15)]);
+  for (const s of [-1, 1]) P.push(['bust', 'chest', 1, (x, y, z) => sdEllipsoid(x, y, z, s * 0.118, 1.85, 0.082, 0.14, 0.125, 0.11)]);
+  P.push(['shoulders', 'chest', 1, (x, y, z) => sdRoundCone(x, y, z * 1.15, [-0.225, 2.045, -0.02], [0.225, 2.045, -0.02], 0.072, 0.072)]);
+  P.push(['neck', 'neck', 0, (x, y, z) => sdRoundCone(x, y, z, [0, 2.02, -0.01], [0, 2.21, 0.0], 0.055, 0.047)]);
+  P.push(['roll', 'roll', 1, (x, y, z) => sdEllipsoid(x, y, z, 0, 1.52, 0.08, 0.24, 0.16, 0.2)]);
+  for (const [k, s] of [['L', 1], ['R', -1]]) {
+    const A = ARMS[k];
+    P.push(['ua' + k, 'upperArm' + k, 1, (x, y, z) => sdRoundCone(x, y, z, A.sh, A.el, 0.068, 0.055)]);
+    P.push(['fa' + k, 'foreArm' + k, 1, (x, y, z) => sdRoundCone(x, y, z, A.el, A.wr, 0.055, 0.045)]);
+    P.push(['cuff' + k, 'foreArm' + k, 1, (x, y, z) => sdRoundCone(x, y, z, [A.wr[0] - A.d[0] * 0.03, A.wr[1] - A.d[1] * 0.03, A.wr[2]], A.wr, 0.046, 0.046)]);
+    P.push(['fist' + k, 'hand' + k, 0, (x, y, z) => sdEllipsoid(x, y, z, A.fi[0], A.fi[1], A.fi[2], 0.05, 0.06, 0.053)]);
+  }
+  return P;
+}
+function bodySDF(P) {
+  const ix = Object.fromEntries(P.map((p, i) => [p[0], i]));
+  return (x, y, z, out) => {
+    const d = P.map(p => p[3](x, y, z));
+    let t = smin(d[ix.hips], d[ix.waist], 0.12);
+    t = smin(t, d[ix.ribcage], 0.1);
+    let b = 1e9; for (let i = 0; i < P.length; i++) if (P[i][0] === 'bust') b = smin(b, d[i], 0.05);
+    t = smin(t, b, 0.07);
+    t = smin(t, d[ix.shoulders], 0.09);
+    t = smin(t, d[ix.neck], 0.05);
+    t = smin(t, d[ix.roll], 0.035);           // small k keeps a crease under the roll
+    for (const k of ['L', 'R']) {
+      let a = smin(d[ix['ua' + k]], d[ix['fa' + k]], 0.03);
+      a = smin(a, d[ix['cuff' + k]], 0.01);
+      a = smin(a, d[ix['fist' + k]], 0.012);
+      t = smin(t, a, 0.045);
+    }
+    if (out) out.d = d;
+    return t;
+  };
+}
 
 export class Hachi {
   constructor() {
-    this.root = new THREE.Group();          // world placement, yaw
-    this.body = new THREE.Group();          // scaled by size
-    this.root.add(this.body);
-    this.pelvis = new THREE.Group(); this.body.add(this.pelvis);  // bobbing upper body
+    this.root = new THREE.Group();
+    this.body = new THREE.Group(); this.root.add(this.body);
     this.U = { uTime: { value: 0 } };
     this.bellyU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 } };
-    this.rollU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 } };
     this.hairU = { uSway: { value: new THREE.Vector3() }, uTime: this.U.uTime };
-    this.skirtU = { uLegL: { value: new THREE.Vector2() }, uLegR: { value: new THREE.Vector2() }, uTime: this.U.uTime, uSkTop: { value: 1.4 } };
+    this.skirtU = { uLegL: { value: new THREE.Vector2() }, uLegR: { value: new THREE.Vector2() }, uTime: this.U.uTime, uSkTop: { value: 1.42 }, uSkOff: { value: 0 } };
     this.face = new Face();
     this.build();
-    // state
     this.phase = 0; this.lastStep = 0; this.speed = 0;
     this.jig = new THREE.Vector3(); this.jigV = new THREE.Vector3();
-    this.roll = new THREE.Vector3(); this.rollV = new THREE.Vector3();
-    this.rip = 0; this.stage = 0; this.gx = 1; this.gy = 1; this.bodyScale = 1;
-    this.gxT = 1; this.gyT = 1; this.scaleT = 1; this.growV = 0;
-    this.headYaw = 0; this.headPitch = 0; this.mode = 'walk'; this.hug = 0; this.armsUp = 1;
-    this.talk = 0; this.onStep = null; this.swayV = new THREE.Vector3(); this.sway = new THREE.Vector3();
+    this.rollP = new THREE.Vector3(); this.rollV = new THREE.Vector3();
+    this.rip = 0; this.stage = 0; this.growV = 0; this.lift = 0;
+    this.headYaw = 0; this.headPitch = 0; this.hug = 0; this.swayV = new THREE.Vector3(); this.sway = new THREE.Vector3();
+    this.onStep = null;
     this.setStage(0, true);
   }
 
+  buildBody() {
+    const P = bodyPrims(), f = bodySDF(P);
+    const t0 = performance.now();
+    const g = surfaceNets((x, y, z) => f(x, y, z), [-0.86, 0.84, -0.32], [0.86, 2.42, 0.42], 0.0145);
+    const n = g.positions.length / 3;
+    // fix winding using normals
+    const I = g.indices, Pp = g.positions, N = g.normals;
+    for (let t = 0; t < I.length; t += 3) {
+      const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+      const ux = Pp[b] - Pp[a], uy = Pp[b + 1] - Pp[a + 1], uz = Pp[b + 2] - Pp[a + 2];
+      const vx = Pp[c] - Pp[a], vy = Pp[c + 1] - Pp[a + 1], vz = Pp[c + 2] - Pp[a + 2];
+      const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+      if (fx * (N[a] + N[b] + N[c]) + fy * (N[a + 1] + N[b + 1] + N[c + 1]) + fz * (N[a + 2] + N[b + 2] + N[c + 2]) < 0) { const tmp = I[t + 1]; I[t + 1] = I[t + 2]; I[t + 2] = tmp; }
+    }
+    // bones
+    const B = {}; const mk = (name, parent, p) => { const b = new THREE.Bone(); b.name = name; B[name] = b; b.userData.rest = new THREE.Vector3(...p); if (parent) { B[parent].add(b); const pr = B[parent].userData.abs; b.position.set(p[0] - pr.x, p[1] - pr.y, p[2] - pr.z); } else b.position.set(...p); b.userData.abs = new THREE.Vector3(...p); return b; };
+    mk('hips', null, [0, 1.1, 0]); mk('spine', 'hips', [0, 1.38, 0]); mk('chest', 'spine', [0, 1.72, -0.02]); mk('roll', 'spine', [0, 1.53, 0.17]);
+    mk('neck', 'chest', [0, 2.1, -0.01]); mk('head', 'neck', [0, 2.18, 0.0]);
+    for (const k of ['L', 'R']) { const A = ARMS[k]; mk('upperArm' + k, 'chest', A.sh); mk('foreArm' + k, 'upperArm' + k, A.el); mk('hand' + k, 'foreArm' + k, A.wr); }
+    const names = Object.keys(B); const bi = Object.fromEntries(names.map((nm, i) => [nm, i]));
+    // skin weights from soft primitive membership
+    const skinI = new Uint16Array(n * 4), skinW = new Float32Array(n * 4), col = new Float32Array(n * 3);
+    const armW = new Float32Array(n), armPh = new Float32Array(n), ribTan = new Float32Array(n * 3), cloth = new Float32Array(n);
+    const out = {};
+    for (let v = 0; v < n; v++) {
+      const x = Pp[v * 3], y = Pp[v * 3 + 1], z = Pp[v * 3 + 2];
+      f(x, y, z, out); const d = out.d; let dm = Infinity; for (const q of d) dm = Math.min(dm, q);
+      const acc = {}; let clothAcc = 0, wsum = 0, armAcc = { L: 0, R: 0 }, uaAcc = 0, faAcc = 0;
+      for (let i = 0; i < P.length; i++) {
+        const [nm, bone, cl] = P[i]; const kk = (nm.startsWith('fist') || nm === 'neck') ? 0.012 : 0.028;
+        const w = Math.exp(-(d[i] - dm) / kk); if (w < 1e-4) continue;
+        let bones = [[bone, 1]];
+        if (nm === 'waist') { const t = THREE.MathUtils.smoothstep(y, 1.2, 1.55); bones = [['hips', 1 - t], ['spine', t]]; }
+        if (nm === 'ribcage') { const t = THREE.MathUtils.smoothstep(y, 1.62, 1.85); bones = [['spine', 1 - t], ['chest', t]]; }
+        if (nm === 'shoulders') { const t = THREE.MathUtils.smoothstep(Math.abs(x), 0.14, 0.27); bones = [['chest', 1 - t], ['upperArm' + (x > 0 ? 'L' : 'R'), t]]; }
+        if (nm.startsWith('ua')) { const A = ARMS[nm.slice(2)]; const al = (x - A.sh[0]) * A.dU[0] + (y - A.sh[1]) * A.dU[1]; const t = THREE.MathUtils.smoothstep(al, -0.03, 0.08); bones = [['chest', 1 - t], [bone, t]]; uaAcc += w; }
+        if (nm.startsWith('fa') || nm.startsWith('cuff') || nm.startsWith('fist')) faAcc += w;
+        for (const [bb, ww] of bones) acc[bb] = (acc[bb] || 0) + w * ww;
+        clothAcc += w * cl; wsum += w;
+        if (nm.endsWith('L') && (nm.startsWith('ua') || nm.startsWith('fa') || nm.startsWith('cuff') || nm.startsWith('fist'))) armAcc.L += w;
+        if (nm.endsWith('R') && (nm.startsWith('ua') || nm.startsWith('fa') || nm.startsWith('cuff') || nm.startsWith('fist'))) armAcc.R += w;
+      }
+      const list = Object.entries(acc).sort((a, b) => b[1] - a[1]).slice(0, 4); const s = list.reduce((a, b) => a + b[1], 0);
+      list.forEach(([bb, ww], j) => { skinI[v * 4 + j] = bi[bb]; skinW[v * 4 + j] = ww / s; });
+      const c = clothAcc / wsum; cloth[v] = c;
+      const cr = 0.955 * c + SKIN_COL.r * (1 - c), cg = 0.948 * c + SKIN_COL.g * (1 - c), cb = 0.938 * c + SKIN_COL.b * (1 - c);
+      col[v * 3] = cr; col[v * 3 + 1] = cg; col[v * 3 + 2] = cb;
+      // arm rib frame (ribs run along the arm)
+      const aw = (armAcc.L + armAcc.R) / wsum; armW[v] = THREE.MathUtils.smoothstep(aw, 0.3, 0.7);
+      const A = armAcc.L > armAcc.R ? ARMS.L : ARMS.R;
+      const up = uaAcc >= faAcc; const D = up ? A.dU : A.dF, O = up ? A.sh : A.el;
+      const px = x - O[0], py = y - O[1], pz = z - O[2];
+      const along = px * D[0] + py * D[1] + pz * D[2];
+      let rx = px - D[0] * along, ry = py - D[1] * along, rz = pz - D[2] * along;
+      // basis around arm axis: e1 = forward (z), e2 = d x e1 ; seam on the inside of the arm
+      const e2x = D[1] * 1 - 0, e2y = -D[0] * 1, e2z = 0; // d x (0,0,1)
+      const a1 = rz, a2 = rx * e2x + ry * e2y + rz * e2z;
+      const sgn = A === ARMS.L ? 1 : -1;
+      armPh[v] = Math.atan2(a2 * sgn, a1) * 26;
+      // tangent = d x radial
+      const tx = D[1] * rz - D[2] * ry, ty = D[2] * rx - D[0] * rz, tz = D[0] * ry - D[1] * rx; const tl = Math.hypot(tx, ty, tz) + 1e-9;
+      ribTan[v * 3] = tx / tl; ribTan[v * 3 + 1] = ty / tl; ribTan[v * 3 + 2] = tz / tl;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(Pp, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinI, 4));
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(skinW, 4));
+    geo.setAttribute('armW', new THREE.BufferAttribute(armW, 1));
+    geo.setAttribute('armPh', new THREE.BufferAttribute(armPh, 1));
+    geo.setAttribute('ribTan', new THREE.BufferAttribute(ribTan, 3));
+    geo.setAttribute('cloth', new THREE.BufferAttribute(cloth, 1));
+    geo.setIndex(I);
+    const mat = knitMaterial({ ribs: 120, amp: 0.5, mode: 'body', key: 'body' });
+    const mesh = new THREE.SkinnedMesh(geo, mat);
+    mesh.add(B.hips);
+    mesh.bind(new THREE.Skeleton(names.map(nm => B[nm])));
+    mesh.frustumCulled = false;
+    this.B = B; this.bodyMesh = mesh; this.sdf = f;
+    this.buildMs = performance.now() - t0; this.bodyTris = I.length / 3;
+    return mesh;
+  }
+
   build() {
-    const P = this.pelvis;
-    const skin = new THREE.MeshStandardMaterial({ color: 0xf7e8e4, roughness: 0.6 });
-    this.skin = skin;
     const shadow = (m) => { m.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); return m; };
+    this.upper = this.buildBody(); this.body.add(this.upper);
+    const B = this.B;
+    const skin = new THREE.MeshPhysicalMaterial({ color: SKIN_COL, roughness: 0.55, sheen: 0.3, sheenColor: new THREE.Color(0xffd8d0) });
 
     // ---------- skirt (long dress below the belly, to the ground)
-    const sk = lathe([[0.7, 0.0], [0.72, 0.03], [0.71, 0.2], [0.66, 0.5], [0.57, 0.85], [0.44, 1.15], [0.3, 1.42]], 64);
-    sk.scale(1, 1, 0.72); sk.translate(0, 0, 0.06);
-    this.skirt = new THREE.Mesh(sk, addSkirt(knitMat(36, 9, { side: THREE.DoubleSide }), this.skirtU));
+    const sk = lathe([[0.62, 0.0], [0.64, 0.025], [0.63, 0.2], [0.58, 0.5], [0.5, 0.85], [0.38, 1.15], [0.27, 1.38], [0.22, 1.48]], 96);
+    sk.scale(1, 1, 0.8); sk.translate(0, 0, 0.03);
+    { const p = sk.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, Math.max(0, p.getY(i))); }
+    this.skirt = new THREE.Mesh(sk, knitMaterial({ ribs: 170, amp: 0.45, skirt: this.skirtU, key: 'skirt', extra: { side: THREE.DoubleSide } }));
     this.body.add(this.skirt);
 
-    // ---------- legs / feet (peeking out under the hem)
-    const shoeMat = new THREE.MeshStandardMaterial({ color: 0xf0eeea, roughness: 0.35 });
+    // ---------- feet
+    const shoeMat = new THREE.MeshPhysicalMaterial({ color: 0xf2f0ec, roughness: 0.3, clearcoat: 0.6 });
     this.feet = [];
     for (const s of [-1, 1]) {
       const g = new THREE.Group();
-      const shoe = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.13, 6, 12), shoeMat);
-      shoe.rotation.x = Math.PI / 2; shoe.position.set(0, 0.04, 0.05); shoe.scale.set(1, 1, 0.7);
-      const heel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.06, 8), shoeMat); heel.position.set(0, 0.03, -0.05);
-      const ankle = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.034, 0.3, 12), skin); ankle.position.set(0, 0.2, -0.02);
+      const shoe = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.13, 8, 16), shoeMat); shoe.rotation.x = Math.PI / 2; shoe.position.set(0, 0.04, 0.05); shoe.scale.set(1, 1, 0.7);
+      const heel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.06, 12), shoeMat); heel.position.set(0, 0.03, -0.05);
+      const ankle = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.032, 0.3, 16), skin); ankle.position.set(0, 0.2, -0.02);
       g.add(shoe, heel, ankle); g.position.x = s * 0.13; this.body.add(g); this.feet.push(g);
     }
 
-    // ---------- torso
-    const tor = lathe([[0, 1.0], [0.28, 1.02], [0.29, 1.25], [0.24, 1.5], [0.23, 1.68], [0.25, 1.82], [0.27, 1.93], [0.265, 2.03], [0.22, 2.11], [0.13, 2.17], [0.06, 2.2], [0, 2.21]], 48);
-    tor.scale(1, 1, 0.7);
-    P.add(new THREE.Mesh(tor, knitMat(30, 10)));
-    // shoulders
-    const sh = new THREE.Mesh(new THREE.CapsuleGeometry(0.095, 0.42, 6, 16), knitMat(10, 4)); sh.rotation.z = Math.PI / 2; sh.position.set(0, 2.08, -0.01); sh.scale.set(1, 1, 0.85); P.add(sh);
-    // modest chest volume
-    for (const s of [-1, 1]) { const b = new THREE.Mesh(new THREE.SphereGeometry(0.105, 24, 18), knitMat(8, 6)); b.position.set(s * 0.1, 1.9, 0.08); b.scale.set(1.15, 1.0, 0.85); P.add(b); }
-    // neck
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.05, 0.2, 16), skin); neck.position.set(0, 2.25, 0.0); P.add(neck);
-    // polo collar
-    const colMat = knitMat(12, 1, { color: 0xf6f5f2 });
-    const band = new THREE.Mesh(new THREE.TorusGeometry(0.058, 0.016, 8, 24), colMat); band.rotation.x = Math.PI / 2 - 0.25; band.position.set(0, 2.205, 0.0); band.scale.set(1, 0.85, 1); P.add(band);
-    for (const s of [-1, 1]) {
-      const fs = new THREE.Shape(); fs.moveTo(0, 0); fs.lineTo(s * 0.085, -0.012); fs.lineTo(s * 0.06, -0.075); fs.lineTo(0, -0.035); fs.closePath();
-      const fgeo = new THREE.ExtrudeGeometry(fs, { depth: 0.008, bevelEnabled: true, bevelThickness: 0.003, bevelSize: 0.003, bevelSegments: 2 });
-      const flap = new THREE.Mesh(fgeo, colMat); flap.position.set(s * 0.012, 2.2, 0.085); flap.rotation.set(-0.45, s * 0.35, 0); P.add(flap);
-    }
-    const plk = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.13, 0.01), colMat); plk.position.set(0, 2.1, 0.115); plk.rotation.x = 0.28; P.add(plk);
-    const btnMat = new THREE.MeshStandardMaterial({ color: 0xdedbd5, roughness: 0.3 });
-    for (let i = 0; i < 3; i++) { const b = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), btnMat); b.position.set(0, 2.145 - i * 0.04, 0.124 + i * 0.011); b.scale.z = 0.5; P.add(b); }
+    // ---------- belly dome: perfectly round, heavy, jiggly
+    const bg = new THREE.SphereGeometry(1, 160, 120);
+    { const p = bg.attributes.position; for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); if (y < 0) { const k = 1 + (-y) * 0.05; x *= k; z *= k; } p.setXYZ(i, x, y, z); } bg.computeVertexNormals(); }
+    this.belly = new THREE.Mesh(bg, knitMaterial({ ribs: 190, amp: 0.4, jiggle: this.bellyU, key: 'belly' }));
+    this.body.add(this.belly);
+    // upper belly roll: a smaller round bulge riding on top of the dome (visible crease where they meet)
+    this.rollU = { uJig: { value: new THREE.Vector3() }, uRip: { value: 0 }, uFloor: { value: -9 }, uTime: this.U.uTime, uBreath: { value: 0 } };
+    this.rollMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 128, 72), knitMaterial({ ribs: 150, amp: 0.4, jiggle: this.rollU, key: 'roll' }));
+    this.body.add(this.rollMesh);
 
-    // ---------- belly (upper roll + huge lower belly)
-    const bg = new THREE.SphereGeometry(1, 96, 64);
-    { const p = bg.attributes.position; for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); if (y < 0) { x *= 1 + (-y) * 0.06; z *= 1 + (-y) * 0.1; } if (z < 0) z *= 0.75; p.setXYZ(i, x, y, z); } bg.computeVertexNormals(); }
-    this.belly = new THREE.Mesh(bg, addJiggle(knitMat(56, 18), this.bellyU, 'belly'));
-    this.belly.renderOrder = 1;
-    P.add(this.belly);
-    const rg = new THREE.SphereGeometry(1, 64, 40);
-    { const p = rg.attributes.position; for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); if (y < 0) { x *= 1 + (-y) * 0.08; } if (z < 0) z *= 0.6; p.setXYZ(i, x, y, z); } rg.computeVertexNormals(); }
-    this.roll = null;
-    this.rollMesh = new THREE.Mesh(rg, addJiggle(knitMat(40, 10), this.rollU, 'roll'));
-    P.add(this.rollMesh);
-
-    // ---------- arms
-    this.arms = [];
-    for (const s of [-1, 1]) {
-      const sho = new THREE.Group(); sho.position.set(s * 0.3, 2.06, -0.01); P.add(sho);
-      const up = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.28, 6, 14), knitMat(8, 6)); up.position.y = -0.17; sho.add(up);
-      const elb = new THREE.Group(); elb.position.y = -0.33; sho.add(elb);
-      const fo = new THREE.Mesh(new THREE.CapsuleGeometry(0.054, 0.25, 6, 14), knitMat(8, 6)); fo.position.y = -0.15; elb.add(fo);
-      const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.013, 6, 16), knitMat(8, 1)); cuff.rotation.x = Math.PI / 2; cuff.position.y = -0.3; elb.add(cuff);
-      const hand = new THREE.Group(); hand.position.y = -0.33; elb.add(hand);
-      const fist = new THREE.Mesh(new THREE.SphereGeometry(0.058, 16, 12), skin); fist.scale.set(0.9, 1.1, 0.95); fist.position.y = -0.03; hand.add(fist);
-      const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.035, 4, 8), skin); thumb.position.set(-s * 0.03, -0.03, 0.035); thumb.rotation.z = s * 0.6; hand.add(thumb);
-      for (let k = 0; k < 4; k++) { const kn = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), skin); kn.position.set(-0.03 + k * 0.02, -0.065, 0.025); hand.add(kn); }
-      this.arms.push({ sho, elb, hand, s });
-    }
-
-    // ---------- head
-    const hp = this.headPivot = new THREE.Group(); hp.position.set(0, 2.24, 0.0); P.add(hp);
-    const head = this.head = new THREE.Group(); head.position.set(0, 0.11, 0.015); hp.add(head);
-    const rH = 0.125; this.rH = rH;
-    const deformHead = (g, r) => { const p = g.attributes.position; for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); y *= 1.08; if (y < 0) { const q = y / r; const t = 1 + q * 0.12 - q * q * 0.16; x *= t; z *= 1 + q * 0.1; } if (z > 0 && y < 0) z *= 1 - (Math.abs(x) / r) * 0.1; p.setXYZ(i, x, y, z); } g.computeVertexNormals(); return g; };
-    const hg = deformHead(new THREE.SphereGeometry(rH, 64, 48), rH);
-    head.add(new THREE.Mesh(hg, skin));
-    // face decal = same shape, planar UV from front
-    const fg = deformHead(new THREE.SphereGeometry(rH * 1.004, 64, 48), rH);
+    // ---------- head (child of head bone)
+    const head = this.head = new THREE.Group(); head.position.set(0, 0.105, 0.012); B.head.add(head);
+    const rH = 0.118; this.rH = rH;
+    const deformHead = (g, r) => { const p = g.attributes.position; for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); y *= 1.1; if (y < 0) { const q = y / r; const t = 1 + q * 0.18 - q * q * 0.2; x *= t; z *= 1 + q * 0.08; } if (z > 0) { z *= 1.0 - 0.06 * Math.max(0, -y / r); } p.setXYZ(i, x, y, z); } g.computeVertexNormals(); return g; };
+    head.add(new THREE.Mesh(deformHead(new THREE.SphereGeometry(rH, 72, 54), rH), skin));
+    const fg = deformHead(new THREE.SphereGeometry(rH * 1.003, 72, 54), rH);
     { const p = fg.attributes.position, uv = fg.attributes.uv; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); if (z > 0) uv.setXY(i, x / (2 * rH * 0.9) + 0.5, y / (2 * rH * 1.0) + 0.5 + 0.03); else uv.setXY(i, -1, -1); } }
     this.face.tex.wrapS = this.face.tex.wrapT = THREE.ClampToEdgeWrapping;
-    const faceMat = new THREE.MeshStandardMaterial({ map: this.face.tex, transparent: true, roughness: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
-    this.faceMesh = new THREE.Mesh(fg, faceMat); this.faceMesh.renderOrder = 2; head.add(this.faceMesh);
-    // ears hidden under hair
+    this.faceMesh = new THREE.Mesh(fg, new THREE.MeshStandardMaterial({ map: this.face.tex, transparent: true, roughness: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+    this.faceMesh.renderOrder = 2; head.add(this.faceMesh);
 
-    // ---------- hair
-    const hairMat = (top, len, key, rx = 4, ry = 1) => { const t = HAIRTEX.clone(); t.repeat.set(rx, ry); t.needsUpdate = true; return addSway(new THREE.MeshStandardMaterial({ color: 0xffffff, map: t, roughness: 0.38, metalness: 0.08, side: THREE.DoubleSide }), this.hairU, top, len, key); };
+    // ---------- hair: glossy black, hime cut
+    const hairMat = (top, len, key, rx = 4, ry = 1) => { const t = HAIRTEX.clone(); t.repeat.set(rx, ry); t.needsUpdate = true; return addSway(new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: t, roughness: 0.32, metalness: 0.05, clearcoat: 0.5, clearcoatRoughness: 0.35, side: THREE.DoubleSide }), this.hairU, top, len, key); };
     const capR = rH * 1.085;
-    // crown + blunt bangs (hime cut)
-    const cap = deformHead(new THREE.SphereGeometry(capR, 64, 32, 0, Math.PI * 2, 0, 1.3), rH);
-    head.add(new THREE.Mesh(cap, hairMat(-5, 1, 'hcap', 6, 1)));
-    // back/sides of head (opening for face)
-    const back = deformHead(new THREE.SphereGeometry(capR * 1.01, 64, 40, Math.PI / 2 + 0.78, Math.PI * 2 - 1.56, 0, 2.5), rH);
-    head.add(new THREE.Mesh(back, hairMat(-5, 1, 'hback', 6, 1)));
-    // long straight back hair (attached to upper body)
-    const lh = new THREE.CylinderGeometry(rH * 1.12, 0.33, 1.0, 40, 14, true, 0.85, Math.PI * 2 - 1.7);
-    lh.translate(0, -0.5, 0); lh.scale(1, 1, 0.78);
-    { const p = lh.attributes.position; for (let i = 0; i < p.count; i++) { const y = p.getY(i); const t = Math.min(1, -y / 0.25); p.setZ(i, p.getZ(i) - 0.0 * t); } }
-    const lhm = new THREE.Mesh(lh, hairMat(0.0, 1.0, 'hlong', 8, 1)); lhm.position.set(0, 2.41, -0.02); P.add(lhm);
-    // front locks over the shoulders down the chest
+    head.add(new THREE.Mesh(deformHead(new THREE.SphereGeometry(capR, 72, 36, 0, Math.PI * 2, 0, 1.28), rH), hairMat(-5, 1, 'hcap', 6, 1)));
+    head.add(new THREE.Mesh(deformHead(new THREE.SphereGeometry(capR * 1.01, 72, 44, Math.PI / 2 + 0.74, Math.PI * 2 - 1.48, 0, 2.55), rH), hairMat(-5, 1, 'hback', 6, 1)));
+    // long back hair falling past the waist (attached to neck bone)
+    const LH = 1.05;
+    const lh = new THREE.CylinderGeometry(rH * 1.1, 0.34, LH, 56, 24, true, 0.9, Math.PI * 2 - 1.8);
+    lh.translate(0, -LH / 2, 0);
+    { const p = lh.attributes.position; for (let i = 0; i < p.count; i++) { const y = -p.getY(i); const x = p.getX(i), z = p.getZ(i); const sh = Math.min(1, y / 0.3); p.setX(i, x * (1 + 0.25 * sh)); p.setZ(i, z * 0.8 - 0.05 * sh); } lh.computeVertexNormals(); }
+    const lhm = new THREE.Mesh(lh, hairMat(0, LH, 'hlong', 8, 1)); lhm.position.set(0, 0.3, -0.03); B.neck.add(lhm);
+    // front side locks: over the shoulders, down the chest
     for (const s of [-1, 1]) {
-      const g = new THREE.BoxGeometry(0.075, 0.62, 0.025, 2, 14, 1); g.translate(0, -0.31, 0);
-      const p = g.attributes.position; for (let i = 0; i < p.count; i++) { const y = -p.getY(i); const z = 0.03 + Math.sin(Math.min(1, y / 0.55) * Math.PI) * 0.07 + y * 0.05; p.setZ(i, p.getZ(i) + z); p.setX(i, p.getX(i) + s * y * 0.06); } g.computeVertexNormals();
-      const m = new THREE.Mesh(g, hairMat(0.0, 0.62, 'hfront', 1, 1)); m.position.set(s * 0.15, 2.34, 0.06); P.add(m);
+      const NB = B.neck.userData.abs, F0 = this.sdf;
+      const fz = (x, y) => { let z = 0.42; while (z > -0.1 && F0(x, y, z) > 0) z -= 0.002; return z; };
+      const pts = []; for (let i = 0; i <= 20; i++) { const t = i / 20; const y = 0.28 - t * 0.74; const x = s * (0.112 + t * 0.035); const ay = NB.y + y;
+        const zb = ay < 2.16 ? fz(x, ay) + 0.02 : 0.03; const zc = Math.max(0.03, zb) - NB.z; pts.push(new THREE.Vector3(x, y, zc)); }
+      for (let i = 1; i < 20; i++) pts[i].z = (pts[i - 1].z + pts[i].z * 2 + pts[i + 1].z) / 4;
+      const tube = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 1, 12, false);
+      { const p = tube.attributes.position; // flatten into a ribbon of hair
+        for (let i = 0; i < p.count; i++) { const k = Math.floor(i / 13), t = k / 40; const c = new THREE.CatmullRomCurve3(pts).getPoint(Math.min(1, t)); const dx = p.getX(i) - c.x, dy = p.getY(i) - c.y, dz = p.getZ(i) - c.z; const wdt = 0.05 * (1 - t * 0.45), th = 0.011; const l = Math.hypot(dx, dy, dz) || 1; p.setXYZ(i, c.x + dx / l * wdt * (Math.abs(dx / l) + 0.25), c.y + dy / l * th, c.z + dz / l * th * 1.4); }
+        tube.computeVertexNormals(); }
+      const m = new THREE.Mesh(tube, hairMat(0.3, 0.62, 'hfront', 1, 2)); B.neck.add(m);
     }
 
-    // ---------- hat
-    const hatMat = new THREE.MeshStandardMaterial({ color: 0xf6f5f1, roughness: 0.85, side: THREE.DoubleSide });
-    const hat = this.hat = new THREE.Group(); hat.position.set(0, 0.075, -0.005); hat.rotation.x = -0.1; head.add(hat);
-    hat.add(new THREE.Mesh(lathe([[0.125, 0.012], [0.3, 0.004], [0.44, -0.022], [0.5, -0.045], [0.505, -0.052], [0.44, -0.032], [0.3, -0.006], [0.125, 0.0]], 72), hatMat));
-    hat.add(new THREE.Mesh(lathe([[0.0, 0.2], [0.07, 0.198], [0.118, 0.18], [0.138, 0.11], [0.143, 0.0]], 48), hatMat));
-    const rib = new THREE.Mesh(new THREE.CylinderGeometry(0.1445, 0.1455, 0.04, 48, 1, true), new THREE.MeshStandardMaterial({ color: 0xe4e2dc, roughness: 0.6, side: THREE.DoubleSide })); rib.position.y = 0.025; hat.add(rib);
+    // ---------- hat: big flat wide brim
+    const hatMat = new THREE.MeshPhysicalMaterial({ color: 0xf5f4f0, roughness: 0.8, sheen: 0.5, sheenColor: new THREE.Color(0xffffff), side: THREE.DoubleSide });
+    const hat = this.hat = new THREE.Group(); hat.position.set(0, 0.07, -0.005); hat.rotation.x = -0.08; head.add(hat);
+    hat.add(new THREE.Mesh(lathe([[0.118, 0.013], [0.3, 0.002], [0.42, -0.025], [0.49, -0.055], [0.497, -0.064], [0.42, -0.036], [0.3, -0.01], [0.118, 0.0]], 128), hatMat));
+    hat.add(new THREE.Mesh(lathe([[0.0, 0.14], [0.06, 0.137], [0.105, 0.122], [0.13, 0.08], [0.137, 0.0]], 72), hatMat));
+    const rib = new THREE.Mesh(new THREE.CylinderGeometry(0.1375, 0.1385, 0.035, 72, 1, true), new THREE.MeshStandardMaterial({ color: 0xe6e4de, roughness: 0.6, side: THREE.DoubleSide })); rib.position.y = 0.022; hat.add(rib);
 
-    shadow(this.root);
-    this.faceMesh.castShadow = false;
+    // ---------- polo collar + placket buttons (placed on the SDF surface, parented to the chest bone)
+    const F = this.sdf, CH = B.chest.userData.abs;
+    const toChest = (v) => new THREE.Vector3(v.x - CH.x, v.y - CH.y, v.z - CH.z);
+    const radial = (y, th) => { let r = 0.02; while (r < 0.4 && F(Math.sin(th) * r, y, -0.01 + Math.cos(th) * r) < 0) r += 0.002; return r; };
+    const frontZ = (x, y) => { let z = 0.42; while (z > -0.1 && F(x, y, z) > 0) z -= 0.0015; return z; };
+    const nrm = (x, y, z) => { const e = 0.003; return new THREE.Vector3(F(x + e, y, z) - F(x - e, y, z), F(x, y + e, z) - F(x, y - e, z), F(x, y, z + e) - F(x, y, z - e)).normalize(); };
+    const colMat = knitMaterial({ ribs: 60, amp: 0.3, key: 'collar', extra: { side: THREE.DoubleSide } });
+    { // stand-up collar band hugging the neck base, open at the front
+      const pts = []; for (let i = 0; i <= 48; i++) { const th = 0.32 + (Math.PI * 2 - 0.64) * i / 48; const y = 2.09 - 0.035 * Math.max(0, Math.cos(th)); const r = Math.min(radial(y, th), 0.068) + 0.004; pts.push(toChest(new THREE.Vector3(Math.sin(th) * r, y, -0.01 + Math.cos(th) * r))); }
+      const band = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 96, 0.013, 10, false), colMat); B.chest.add(band);
+    }
+    for (const s of [-1, 1]) { // fold-over collar points lying on the chest
+      const fs = new THREE.Shape(); fs.moveTo(0, 0); fs.quadraticCurveTo(s * 0.03, 0.014, s * 0.058, 0.012); fs.quadraticCurveTo(s * 0.05, -0.02, s * 0.03, -0.056); fs.quadraticCurveTo(s * 0.012, -0.03, 0, -0.012); fs.closePath();
+      const flap = new THREE.Mesh(new THREE.ExtrudeGeometry(fs, { depth: 0.003, bevelEnabled: true, bevelThickness: 0.0025, bevelSize: 0.0025, bevelSegments: 3, curveSegments: 12 }), colMat);
+      const x0 = s * 0.012, y0 = 2.075, z0 = frontZ(x0 + s * 0.03, y0 - 0.025);
+      const n = nrm(x0 + s * 0.03, y0 - 0.025, z0);
+      flap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+      flap.position.copy(toChest(new THREE.Vector3(x0, y0, frontZ(x0, y0) + 0.004)));
+      B.chest.add(flap);
+    }
+    const btnMat = new THREE.MeshPhysicalMaterial({ color: 0xe8e5df, roughness: 0.25, clearcoat: 1 });
+    const ys = [2.015, 1.975, 1.935];
+    for (const y of ys) { const z = frontZ(0, y); const b = new THREE.Mesh(new THREE.SphereGeometry(0.0078, 16, 12), btnMat); b.scale.z = 0.45; b.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm(0, y, z)); b.position.copy(toChest(new THREE.Vector3(0, y, z + 0.005))); B.chest.add(b); }
+    { const y = 1.97, z = frontZ(0, y); const plk = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.115, 0.003), colMat); plk.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm(0, y, z)); plk.position.copy(toChest(new THREE.Vector3(0, y, z + 0.002))); B.chest.add(plk); }
+
+    shadow(this.root); this.faceMesh.castShadow = false;
   }
 
   setStage(n, instant = false) {
     this.stage = n;
-    this.gxT = 1 + 0.22 * n;                         // belly width/depth: unbounded growth
-    this.gyT = 1 + 0.9 * (1 - Math.exp(-n / 4));   // height saturates (spreads instead)
-    this.scaleT = 1.12 * (1 + 0.16 * n);               // whole body slowly grows too
-    if (instant) { this.gx = this.gxT; this.gy = this.gyT; this.bodyScale = this.scaleT; }
+    this.gxT = 1 + 0.25 * n;                 // belly dome radius factor: unbounded, stays round
+    this.scaleT = 1.3 * (1 + 0.08 * n);      // she slowly grows taller too
+    if (instant) { this.gx = this.gxT; this.bodyScale = this.scaleT; }
     else { this.growV += 1.6; this.jigV.y += 1.2; this.rip = 1; }
   }
-  // world-space radius of belly (xz)
-  get radius() { return 0.74 * this.gx * this.bodyScale; }
-  bellyCenter(out) { // world xz center of the belly
-    const z = (-0.22 + 0.68 * Math.pow(this.gx, 0.85)) * this.bodyScale;
-    out.set(Math.sin(this.root.rotation.y) * z, 0, Math.cos(this.root.rotation.y) * z).add(this.root.position); out.y = 0; return out;
-  }
-  get height() { return (2.75 + (this.lift || 0)) * this.bodyScale; }
-  get headWorldY() { return (2.5 + (this.lift || 0)) * this.bodyScale; }
+  get R() { return 0.6 * this.gx; }
+  get radius() { return this.R * this.bodyScale; }
+  domeY() { const R = this.R; return R * 0.93 + Math.max(0.03, 0.1 - (R - 0.6) * 0.3); }
+  bellyCenter(out) { const z = (-0.17 + this.R) * this.bodyScale; out.set(Math.sin(this.root.rotation.y) * z, 0, Math.cos(this.root.rotation.y) * z).add(this.root.position); out.y = 0; return out; }
+  get height() { return (2.62 + this.lift) * this.bodyScale; }
+  get headWorldY() { return (2.30 + this.lift) * this.bodyScale; }
+  get gy() { return this.gx; }
 
-  slap() { this.jigV.z -= 1.2 + Math.random() * 0.3; this.jigV.x += (Math.random() - 0.5) * 0.8; this.jigV.y += 0.5; this.rip = Math.min(1.4, this.rip + 0.8); this.rollV.z -= 0.6; }
-  bump(s = 1) { this.jigV.z -= 0.6 * s; this.jigV.y -= 0.6 * s; this.rip = Math.min(1.2, this.rip + 0.5 * s); }
+  slap() { this.jigV.z -= 1.2 + Math.random() * 0.3; this.jigV.x += (Math.random() - 0.5) * 0.8; this.jigV.y += 0.5; this.rip = Math.min(1.4, this.rip + 0.8); this.rollV.z -= 0.5; }
+  bump(s = 1) { this.jigV.z -= 0.6 * s; this.jigV.y -= 0.6 * s; this.rip = Math.min(1.2, this.rip + 0.5 * s); this.rollV.y -= 0.2 * s; }
 
   update(dt, o) {
-    // o: {speed (m/s), look: Vector3 world | null, mode: 'walk'|'hug'|'idle'|'stun', talk 0..1}
-    const t = (this.U.uTime.value += dt);
-    // growth springs (overshoot a bit = "boing")
+    const t = (this.U.uTime.value += dt), B = this.B;
     const gk = 1 - Math.exp(-dt * 3.2);
-    this.gx += (this.gxT - this.gx) * gk; this.gy += (this.gyT - this.gy) * gk; this.bodyScale += (this.scaleT - this.bodyScale) * gk * 0.8;
-    this.growV *= Math.exp(-dt * 3);
-    const pump = Math.sin(t * 18) * this.growV * 0.03;
-
+    this.gx += (this.gxT - this.gx) * gk; this.bodyScale += (this.scaleT - this.bodyScale) * gk * 0.8;
+    this.growV *= Math.exp(-dt * 3); const pump = Math.sin(t * 18) * this.growV * 0.02;
     this.body.scale.setScalar(this.bodyScale);
     const sp = this.speed += ((o.speed || 0) - this.speed) * (1 - Math.exp(-dt * 6));
-    const stride = 0.62;                                 // local units per half-cycle
+    const stride = 0.6;
     this.phase += (sp / this.bodyScale) / stride * Math.PI * dt;
     const ph = this.phase, walkAmt = Math.min(1, sp / 1.2);
-    // footstep events
     const stepIdx = Math.floor(ph / Math.PI);
     if (stepIdx !== this.lastStep && walkAmt > 0.15) {
       this.lastStep = stepIdx; const side = (stepIdx & 1) ? 1 : -1;
-      this.jigV.y -= 0.55 * walkAmt; this.jigV.x += side * 0.28 * walkAmt; this.jigV.z += 0.12;
-      this.rollV.y -= 0.35 * walkAmt;
+      this.jigV.y -= 0.55 * walkAmt; this.jigV.x += side * 0.26 * walkAmt; this.jigV.z += 0.1;
+      this.rollV.y -= 0.3 * walkAmt;
       this.onStep && this.onStep(side, walkAmt);
     }
-    // legs (feet) + skirt
-    const fl = Math.sin(ph) * 0.3 * walkAmt, fr = -fl;
-    const liftL = Math.max(0, Math.cos(ph)) * 0.09 * walkAmt, liftR = Math.max(0, -Math.cos(ph)) * 0.09 * walkAmt;
+    // feet + skirt hem
+    const fl = Math.sin(ph) * 0.28 * walkAmt, fr = -fl;
+    const liftL = Math.max(0, Math.cos(ph)) * 0.08 * walkAmt, liftR = Math.max(0, -Math.cos(ph)) * 0.08 * walkAmt;
     this.feet[0].position.set(-0.13, liftL, fl); this.feet[1].position.set(0.13, liftR, fr);
     this.feet[0].rotation.x = -liftL * 2.5; this.feet[1].rotation.x = -liftR * 2.5;
     this.skirtU.uLegL.value.set(fl, liftL); this.skirtU.uLegR.value.set(fr, liftR);
-    // pelvis bob/sway
-    const bob = Math.abs(Math.cos(ph)) * 0.035 * walkAmt;
-    // as the belly grows taller, her upper body rides higher (dress stretches) so her face stays visible
-    const ryL = 0.6 * this.gy, cyL = Math.max(0.96 - 0.3 * (this.gy - 1), ryL * 0.78);
-    const lift = Math.max(0, cyL + ryL - 1.56) * 1.25;
-    this.lift = lift;
-    this.pelvis.position.y = lift + bob - 0.02 * walkAmt + Math.sin(t * 1.6) * 0.004;
-    this.pelvis.rotation.z = Math.sin(ph) * 0.03 * walkAmt;
-    this.pelvis.rotation.y = Math.sin(ph) * 0.04 * walkAmt;
-    this.pelvis.rotation.x = 0.03 * walkAmt;
 
-    // belly springs
-    const k = 75 / Math.sqrt(this.gx), c = 3.2;
+    // belly dome placement (round in all directions) and upper-body lift
+    const R = this.R, cy = this.domeY(), cz = -0.17 + R;
+    this.lift = Math.max(-0.35, cy + 1.14 * R - 1.6 + 0.1 * Math.max(0, R - 0.6));
+    const bob = Math.abs(Math.cos(ph)) * 0.03 * walkAmt;
+    B.hips.position.y = 1.1 + this.lift + bob - 0.015 * walkAmt + Math.sin(t * 1.6) * 0.003;
+    B.hips.rotation.set(0.02 * walkAmt, Math.sin(ph) * 0.06 * walkAmt, Math.sin(ph) * 0.035 * walkAmt);
+    B.spine.rotation.set(0.0, -Math.sin(ph) * 0.04 * walkAmt, -Math.sin(ph) * 0.02 * walkAmt);
+    B.chest.rotation.set(Math.sin(t * 1.9) * 0.01, -Math.sin(ph) * 0.03 * walkAmt, -Math.sin(ph) * 0.015 * walkAmt);
+    this.belly.position.set(0, cy + bob * 0.5, cz);
+    this.belly.scale.set(R * 1.1, R * 0.93, R * 1.02);
+    this.bellyU.uFloor.value = -(cy + bob * 0.5) / (R * 0.93);
+    const skg = Math.max(1, R * 1.1 / 0.62);
+    this.skirt.scale.set(skg, (1.48 + this.lift) / 1.48, skg * 0.9 + 0.1);
+    this.skirtU.uSkTop.value = 1.48; this.skirtU.uSkOff.value = Math.max(0, cz * 0.75) / (skg * 0.9 + 0.1);
+
+    // springs: belly dome + upper roll bone
+    const k = 70 / Math.sqrt(this.gx), c = 3.0;
     this.jigV.addScaledVector(this.jig, -k * dt).multiplyScalar(Math.exp(-c * dt)); this.jig.addScaledVector(this.jigV, dt);
-    this.rollV.addScaledVector(this.roll, -110 * dt).multiplyScalar(Math.exp(-4 * dt)); this.roll.addScaledVector(this.rollV, dt);
+    this.rollV.addScaledVector(this.rollP, -120 * dt).multiplyScalar(Math.exp(-5 * dt)); this.rollP.addScaledVector(this.rollV, dt);
     this.rip *= Math.exp(-dt * 2.2);
-    this.bellyU.uJig.value.copy(this.jig).multiplyScalar(0.11);
-    this.bellyU.uRip.value = this.rip; this.bellyU.uBreath.value = Math.sin(t * 1.9) * 0.008 + pump;
-    this.rollU.uJig.value.copy(this.roll).multiplyScalar(0.08).addScaledVector(this.jig, 0.04);
-    this.rollU.uRip.value = this.rip * 0.4; this.rollU.uBreath.value = Math.sin(t * 1.9 - 0.4) * 0.006 + pump * 0.6;
+    this.bellyU.uJig.value.copy(this.jig).multiplyScalar(0.1);
+    this.bellyU.uRip.value = this.rip; this.bellyU.uBreath.value = Math.sin(t * 1.9) * 0.007 + pump;
+    { const front = cz + 0.8 * R, back = 0.05, rz = (front - back) / 2;
+      this.rollMesh.position.set(this.rollP.x * 0.03 + this.jig.x * 0.02, cy + 0.68 * R + bob * 0.7 + this.rollP.y * 0.04 + this.jig.y * 0.01, back + rz + this.rollP.z * 0.03);
+      this.rollMesh.scale.set(0.8 * R, 0.46 * R, rz);
+      this.rollU.uJig.value.set(this.rollP.x * 0.12, this.rollP.y * 0.12, this.rollP.z * 0.12).addScaledVector(this.jig, 0.04);
+      this.rollU.uRip.value = this.rip * 0.5; this.rollU.uBreath.value = this.bellyU.uBreath.value; }
+    B.roll.position.set(0 + this.rollP.x * 0.02, 1.53 - 1.38 + this.rollP.y * 0.03 + this.jig.y * 0.004, 0.17 + this.rollP.z * 0.02);
 
-    // belly placement
-    const gx = this.gx, gy = this.gy;
-    const rx = 0.78 * gx, ry = 0.6 * gy, rz = 0.68 * Math.pow(gx, 0.85);
-    const cy = Math.max(0.96 - 0.3 * (gy - 1), ry * 0.78);
-    const cz = -0.22 + rz;
-    this.belly.position.set(0, cy - lift - (this.pelvis.position.y - lift) * 0.6, cz);
-    this.belly.scale.set(rx, ry, rz);
-    this.bellyU.uFloor.value = (-cy + (this.pelvis.position.y - lift) * 0.6 - (this.pelvis.position.y - lift)) / ry;
-    const rgx = Math.pow(gx, 0.75);
-    this.rollMesh.position.set(0, 1.56, 0.17 + 0.1 * (rgx - 1));
-    this.rollMesh.scale.set(0.58 * rgx, 0.22 * Math.pow(gy, 0.4), 0.46 * rgx);
-    const skg = 1 + 0.55 * (gx - 1);
-    this.skirt.scale.set(skg, (1.42 + lift) / 1.42, skg);
-    this.skirtU.uSkTop.value = 1.42;
-
-    // arms: ref pose (fists up) with swing; hug pose when catching
+    // arms: reference pose (fists up at shoulder height) + swing; hug pose
     this.hug += ((o.mode === 'hug' ? 1 : 0) - this.hug) * (1 - Math.exp(-dt * 6));
-    const reach = Math.max(0.0, gx - 1) * 0.35;
-    for (const a of this.arms) {
-      const s = a.s, sw = Math.sin(ph + (s > 0 ? 0 : Math.PI)) * 0.3 * walkAmt;
-      const wave = o.mode === 'stun' ? Math.sin(t * 14 + s) * 0.3 : 0;
-      // walk pose
-      let ux = -0.15 + sw, uz = s * (0.55 + reach), ex = -1.9 + sw * 0.5 + wave, ey = 0;
-      // hug pose
-      const hx = -1.05, hz = s * (0.3 + reach * 0.6), hex = -0.45;
-      ux += (hx - ux) * this.hug; uz += (hz - uz) * this.hug; ex += (hex - ex) * this.hug;
-      a.sho.rotation.set(ux, 0, uz); a.elb.rotation.set(ex, 0, -s * 0.15 * (1 - this.hug)); a.elb.rotation.order = 'XYZ';
-      a.hand.rotation.set(0.3, 0, 0);
-      a.elb.rotation.y = s * 0.6 * (1 - this.hug);
+    const stun = o.mode === 'stun';
+    for (const [kk, s] of [['L', 1], ['R', -1]]) {
+      const sw = Math.sin(ph + (s > 0 ? 0 : Math.PI)) * walkAmt;
+      const cheer = Math.sin(t * 2.2 + s) * 0.03 + (stun ? Math.sin(t * 14 + s) * 0.12 : 0);
+      // desired directions in chest space
+      const ua = new THREE.Vector3(s * 0.4, -0.9, 0.08 + sw * 0.18).normalize();
+      const fa = new THREE.Vector3(s * 0.18, 0.95 + cheer, -0.02 + sw * 0.12).normalize();
+      const uaH = new THREE.Vector3(s * 0.32, -0.45, 0.85).normalize();
+      const faH = new THREE.Vector3(-s * 0.35, -0.2, 0.9).normalize();
+      ua.lerp(uaH, this.hug).normalize(); fa.lerp(faH, this.hug).normalize();
+      const rest = new THREE.Vector3(s * ARM_U[0], ARM_U[1], 0), restF = new THREE.Vector3(s * ARM_F[0], ARM_F[1], 0);
+      const qu = new THREE.Quaternion().setFromUnitVectors(rest, ua);
+      B['upperArm' + kk].quaternion.copy(qu);
+      const local = fa.clone().applyQuaternion(qu.clone().invert());
+      B['foreArm' + kk].quaternion.setFromUnitVectors(restF, local);
+      B['hand' + kk].rotation.set(0.25, 0, -s * 0.2);
     }
 
     // head tracking
-    let yaw = 0, pitch = 0.06;
+    let yaw = 0, pitch = 0.05;
     if (o.look) {
-      const lp = this.headPivot.getWorldPosition(_v); const dx = o.look.x - lp.x, dz = o.look.z - lp.z, dy = o.look.y - lp.y;
-      const ang = Math.atan2(dx, dz) - this.root.rotation.y; yaw = Math.atan2(Math.sin(ang), Math.cos(ang));
-      yaw = THREE.MathUtils.clamp(yaw, -1.0, 1.0);
-      pitch = THREE.MathUtils.clamp(-Math.atan2(dy, Math.hypot(dx, dz)), -0.2, 0.55);
-      this.face.look[0] = THREE.MathUtils.clamp((Math.atan2(Math.sin(ang), Math.cos(ang)) - yaw) * 1.5, -1, 1);
+      const lp = B.head.getWorldPosition(_v); const dx = o.look.x - lp.x, dz = o.look.z - lp.z, dy = o.look.y - lp.y;
+      const ang = Math.atan2(dx, dz) - this.root.rotation.y; const a = Math.atan2(Math.sin(ang), Math.cos(ang));
+      yaw = THREE.MathUtils.clamp(a, -1.0, 1.0);
+      pitch = THREE.MathUtils.clamp(-Math.atan2(dy, Math.hypot(dx, dz)), -0.2, 0.6);
+      this.face.look[0] = THREE.MathUtils.clamp((a - yaw) * 1.5, -1, 1);
       this.face.look[1] = THREE.MathUtils.clamp(pitch * 1.5 - 0.3, -1, 1);
     }
     const hk = 1 - Math.exp(-dt * 5);
     this.headYaw += (yaw - this.headYaw) * hk; this.headPitch += (pitch - this.headPitch) * hk;
-    this.headPivot.rotation.set(this.headPitch * 0.6, this.headYaw * 0.75, Math.sin(t * 0.9) * 0.03 + (o.mode === 'stun' ? Math.sin(t * 9) * 0.08 : 0), 'YXZ');
-    this.head.rotation.set(this.headPitch * 0.4, this.headYaw * 0.25, 0);
+    B.neck.rotation.set(this.headPitch * 0.4, this.headYaw * 0.35, 0, 'YXZ');
+    B.head.rotation.set(this.headPitch * 0.6, this.headYaw * 0.65, Math.sin(t * 0.9) * 0.03 + (stun ? Math.sin(t * 9) * 0.08 : 0), 'YXZ');
 
-    // hair sway: lag behind motion + step bounce
-    const target = new THREE.Vector3(Math.sin(ph) * 0.02 * walkAmt - this.headYaw * 0.03, 0, -0.05 * walkAmt - 0.015 + this.headPitch * 0.04);
+    // hair inertia
+    const target = new THREE.Vector3(Math.sin(ph) * 0.02 * walkAmt - this.headYaw * 0.03, 0, -0.05 * walkAmt - 0.01 + this.headPitch * 0.03);
     this.swayV.addScaledVector(target.sub(this.sway), 40 * dt).multiplyScalar(Math.exp(-5 * dt)); this.sway.addScaledVector(this.swayV, dt);
     this.hairU.uSway.value.copy(this.sway);
 
-    // face
     this.face.talk = o.talk || 0; this.face.update(dt);
   }
 }

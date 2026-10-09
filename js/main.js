@@ -381,7 +381,7 @@ function updateGrab(dt) {
   // camera looks up at her face
   const hp = headPos(); const lx = hp.x - S.pos.x, lz = hp.z - S.pos.z;
   const wantYaw = Math.atan2(-lx, -lz); let dy = wantYaw - S.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); S.yaw += dy * (1 - Math.exp(-dt * 6));
-  const wantPitch = Math.atan2(hp.y - 1.0, Math.hypot(lx, lz)) * 0.8; S.pitch += (wantPitch - S.pitch) * (1 - Math.exp(-dt * 6));
+  const wantPitch = Math.atan2(hp.y - 1.02 - (S.gl || 0), Math.hypot(lx, lz)) * 0.85; S.pitch += (wantPitch - S.pitch) * (1 - Math.exp(-dt * 6));
   mouseDX = mouseDY = 0;
   if (Math.random() < dt * 3) hachi.jigV.y += 0.3; // she squeezes
   if (g.final) { if (g.t > 3.8) gameOver(); return; }
@@ -402,7 +402,10 @@ function updateLights() {
 }
 
 function updateCamera(dt, dist) {
-  const eye = 1.02;
+  // during a restraint she hugs you up against her upper belly so you face her
+  const glT = S.mode === 'grab' ? Math.max(0, hachi.headWorldY - 0.62 * hachi.bodyScale - 1.02) : 0;
+  S.gl = (S.gl || 0) + (glT - (S.gl || 0)) * (1 - Math.exp(-dt * 4));
+  const eye = 1.02 + S.gl;
   S.shake = Math.max(0, S.shake - dt * 1.6);
   const sh = S.shake * S.shake;
   const bobY = Math.sin(S.bob * Math.PI) * 0.035, bobX = Math.cos(S.bob * Math.PI * 0.5) * 0.02;
@@ -457,7 +460,7 @@ function tick(dt) {
     // lights on her
     const hp = hachi.root.position, fy = hachi.root.rotation.y, s = hachi.bodyScale;
     hachi.bellyCenter(bc); const fr = hachi.radius + 1.6;
-    herLight.position.set(bc.x + Math.sin(fy) * fr, 2.7 * s, bc.z + Math.cos(fy) * fr); herLight.distance = 10 * s; herLight.intensity = 9 * s;
+    herLight.position.set(bc.x + Math.sin(fy) * fr, hachi.headWorldY * 0.9, bc.z + Math.cos(fy) * fr); herLight.distance = 10 * s; herLight.intensity = 6 * s;
     herRim.position.set(hp.x - Math.sin(fy) * 1.5 * s + Math.cos(fy) * 1.5 * s, 2.8 * s, hp.z - Math.cos(fy) * 1.5 * s - Math.sin(fy) * 1.5 * s); herRim.distance = 8 * s;
     moon.position.set(camera.position.x - 30, 60, camera.position.z - 20); moon.target.position.set(camera.position.x, 0, camera.position.z);
   }
